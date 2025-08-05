@@ -1,0 +1,60 @@
+# model_file - Path to the trained model (.pt file).
+model_file:  
+
+# dwi_path - Path to the input DWI file (ensure bval and bvec share the same prefix).
+dwi_path: 
+
+# wm_mask_dir - Path to the white matter mask file.
+wm_mask_dir: 
+
+# brain_mask_dir - Path to the brain mask file.
+brain_mask_dir: 
+
+# out_dir - POutput directory for results.
+out_dir: 
+
+# out_name - Output file name (with extension).
+out_name: 
+
+# num_seeds - (int) Number of seed points for tractography.
+num_seeds: 
+
+# step_size - (float) Tractography step size (in voxels).
+step_size: 1
+
+# max_angle - (float) Maximum allowed streamline angle (in degrees).
+max_angle: 45
+
+# max_length - (float) Maximum allowed streamline length (in mm).
+max_length: 200
+
+# min_length - (float) Minimum allowed streamline length (in mm).
+min_length: 40
+
+# track_batch_size - (int) Number of streamlines tracked simultaneously.
+track_batch_size: 300000
+
+# Recurrent model configuration
+num_layers: 2
+num_cells: 512
+cell_type: "GRU"
+
+# dropout_prob, - (float) Dropout deletion probability (applies when use_dropout=True).
+dropout_prob: 0.5
+
+# loss_type - (str) Loss function type ("l1" or "l2").
+loss_type: "l1"
+
+# sh_order - (int) Spherical harmonics order
+sh_order: 6
+
+# use_previous_dire - (int) Number of previous directions to use as input (0, 1, 2 or ...).
+use_previous_dire: 0
+
+# input_type - (str) Input feature type ("sh" for spherical harmonics).
+input_type: "sh"
+
+look_ahead: True
+
+# device - (str) Device to use ("cpu" or "cuda:0", "cuda:1", etc.).
+device: 'cuda:0'

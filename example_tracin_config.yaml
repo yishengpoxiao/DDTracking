@@ -1,0 +1,63 @@
+# Recurrent model configuration
+num_layers: 2
+num_cells: 512
+cell_type: "GRU"
+
+# dropout_prob, - (float) Dropout deletion probability (applies when use_dropout=True).
+dropout_prob: 0。5
+
+# loss_type - (str) Loss function type ("l1" or "l2").
+loss_type: "l1"
+
+# learning_rate -(float) Initial learning rate in training phase.
+learning_rate: 1e-4
+
+# batch_size - (int) Data batch size for training.
+batch_size: 
+
+# epochs - (int) Number of training epochs.
+epochs: 
+
+# decay_LR_patience - (int) Number of training epochs to wait in case validation performance does not improve before learning rate decay is applied.
+decay_LR_patience: 20
+
+# decay_factor - (float [0, 1]) In an LR decay step, the existing LR will be multiplied by this factor.
+decay_factor: 0.1
+
+# early_stopping - (int) Number of epochs to wait before training is terminated when validation performance does not improve.
+early_stopping_patience: 50
+
+# weight_decay - (float) The minimum value of the learning rate.
+eta_min: 1e-7
+
+# model_weights_save_dir - (string) Path for saving the model's files after training is done.
+model_weights_save_dir: 
+
+# model_name, - (string) The model's name (used when saving weights file).
+model_name: 
+
+# Dataset Paths
+trainset_path:            # Path to training dataset
+validset_path:            # Path to validation dataset
+# Alternatively, provide the full dataset path
+# dataset_path:  
+
+# sh_order - (int) Spherical harmonics order
+sh_order: 6
+
+# use_previous_dire - (int) Number of previous directions to use as input (0, 1, 2 or ...).
+use_previous_dire: 0
+
+# input_type - (str) Input feature type ("sh" for spherical harmonics).
+input_type: "sh"
+
+# flip_streamline - (bool) Whether to flip streamlines during training for data augmentation.
+flip_streamline: False
+
+look_ahead: True
+
+# vox_step - (float) Step size (in voxels) used during training.
+vox_step: 1
+
+# resume - (bool) Whether to resume training from the last saved checkpoint.
+resume: False
