@@ -68,8 +68,8 @@ dataset/
 │   │   └── sub-001_dwi.bvec
 │   ├── mask/
 │   │   ├── sub-001_brain-mask.nii.gz
-│   │   └── sub-001_wm_mask.nii.gz│
-   └── merged_tract/
+│   │   └── sub-001_wm_mask.nii.gz
+│   └── merged_tract/
 │       └── tract_whole_tract.trk
 ├── sub-002/
 │   └── ...
