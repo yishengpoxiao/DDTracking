@@ -43,6 +43,30 @@ tar -xzvf weights.tar.gz
 
 ## Usage
 
+### Preprocessing: Extract B Shell and Rigid Registration to MNI Space
+
+This step prepares your diffusion data for subsequent analysis.
+
+1. **Extract the desired b-shells**
+   Use only single shell data. Refer to the `extract_bshell` function in [`utilize/extract_dwi_bshell.py`](https://github.com/yishengpoxiao/DDTracking/blob/main/utilize/extract_dwi_bshell.py).
+
+2. **Rigid registration to MNI space**  
+   The extracted diffusion data needs to be rigidly registered to the MNI space.  
+   You can use [`utilize/register_volume_to_MNI.py`](https://github.com/yishengpoxiao/DDTracking/blob/main/utilize/register_volume_to_MNI.py) for this step.  
+   This process requires **ANTs** and **FSL**.
+
+   Registration is performed between the FA image computed from your DWI and the [MNI FA template](https://github.com/yishengpoxiao/DDTracking/blob/main/resources/MNI_FA_template.nii.gz).  
+   A `transform` folder will be created in the DWI directory to store transformation files.
+
+   **Example command:**
+   ```
+   python register_volume_to_MNI.py \
+       -input_image <dwi_path> \
+       -brain_mask <brain_mask_path> \
+       -template <MNI_FA_template_path> \
+       -wm_mask <wm_mask_path>
+   ```
+
 ### Inference: Fiber Tracking with Pre-trained Model
 
 To perform tractography using a pre-trained model:
@@ -51,7 +75,7 @@ To perform tractography using a pre-trained model:
 python tractography.py --config track_config.yaml --track
 ```
 
-Modify `track_config.yaml` to match your input paths and desired parameters.
+Before running, make sure to modify `track_config.yaml` to match your input paths and desired parameters.
 
 ---
 
