@@ -265,7 +265,8 @@ class DDTracking(nn.Module):
         new_samples = self.diffusion.sample(
             global_feat=global_feat,  # (B, num_cells)
             local_feat=local_feat,
-            bestof=True,
+            # bestof=True,
+            bestof=False,
             point_dim=self.target_dim
         )  # (B, target_dim)
 
