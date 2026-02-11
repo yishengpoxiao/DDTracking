@@ -114,7 +114,28 @@ This work is supported by:
 - **National Key R&D Program of China** (No. 2023YFE0118600)
   
 - **National Natural Science Foundation of China** (No. 62371107)
-  
+
+## Citation
+
+If you find **DDTracking** useful in your research, please cite our paper:
+
+**DDTracking: A diffusion model-based deep generative framework with local-global spatiotemporal modeling for diffusion MRI tractography**
+*Medical Image Analysis, 2026*
+
+```bibtex
+@article{LI2026103967,
+  title   = {DDTracking: A diffusion model-based deep generative framework with local-global spatiotemporal modeling for diffusion MRI tractography},
+  journal = {Medical Image Analysis},
+  volume  = {110},
+  pages   = {103967},
+  year    = {2026},
+  issn    = {1361-8415},
+  doi     = {https://doi.org/10.1016/j.media.2026.103967},
+  url     = {https://www.sciencedirect.com/science/article/pii/S1361841526000368},
+  author  = {Yijie Li and Wei Zhang and Xi Zhu and Ye Wu and Yogesh Rathi and Lauren J. O'Donnell and Fan Zhang},
+  keywords = {Tractography, Deep learning, Diffusion model, Diffusion MRI}
+}
+```
 
 ## Contact
 
