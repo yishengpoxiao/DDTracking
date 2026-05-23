@@ -106,7 +106,6 @@ dependencies:
   - pip=23.3.1=py39h06a4308_0
   - pysocks=1.7.1=py39h06a4308_0
   - python=3.9.19=h955ad1f_1
-  - pytorch=2.4.1=py3.9_cuda12.1_cudnn9.1.0_0
   - pytorch-cuda=12.1=ha16c6d3_6
   - pytorch-mutex=1.0=cuda
   - pyyaml=6.0.1=py39h5eee18b_0
