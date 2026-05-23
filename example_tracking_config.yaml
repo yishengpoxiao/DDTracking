@@ -16,7 +16,7 @@ out_dir:
 # out_name - Output file name (with extension).
 out_name: 
 
-# num_seeds - (int) Number of seed points for tractography.
+# num_seeds - (int) How many seed points to generate within each voxel.
 num_seeds: 
 
 # step_size - (float) Tractography step size (in voxels).
