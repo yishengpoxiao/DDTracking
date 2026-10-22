@@ -1,4 +1,4 @@
-"""Run inside 3D Slicer: Slicer --python-script tests/slicer_smoke.py"""
+"""Run Slicer with --additional-module-paths slicer/DDTracking and --python-script tests/slicer_smoke.py."""
 
 import json
 import os
@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import time
+import traceback
 
 import numpy as np
 import qt
@@ -14,8 +15,6 @@ import vtk
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(REPO_ROOT, "slicer", "DDTracking"))
-from DDTracking import DDTrackingWidget
 
 
 def wait_for(predicate, description, timeout=15):
@@ -122,27 +121,51 @@ def set_path(edit, value):
 
 
 def run_smoke_test():
-    python = shutil.which("python3") or sys.executable
-    if not os.path.isfile(python):
-        raise AssertionError("A standalone Python executable is required for the process test")
+    standalonePython = os.environ.get("DDTRACKING_TEST_PYTHON")
+    if standalonePython:
+        python = os.path.abspath(standalonePython)
+    else:
+        environment = slicer.util.startupEnvironment()
+        searchPath = environment.get("PATH", "")
+        python = (shutil.which("python3", path=searchPath)
+                  or shutil.which("python", path=searchPath))
+    if not python or not os.path.isfile(python):
+        raise AssertionError(
+            "A standalone Python executable is required; set DDTRACKING_TEST_PYTHON "
+            "or add python3/python to Slicer's startup PATH"
+        )
     backend = os.path.join(REPO_ROOT, "slicer_backend", "run.py")
     if not os.path.isfile(backend):
         raise AssertionError("Run this test from a source checkout containing slicer_backend/run.py")
 
+    if getattr(slicer.modules, "ddtracking", None) is None:
+        raise AssertionError(
+            "DDTracking was not discovered. Add slicer/DDTracking to Additional module paths "
+            "before launching this smoke test."
+        )
+
+    print("Slicer version: %s" % slicer.app.applicationVersion)
+    print("Slicer Python: %s" % sys.version.split()[0])
+    print("Qt version: %s" % qt.qVersion())
+    print("VTK version: %s" % vtk.vtkVersion().GetVTKVersion())
+    print("Standalone Python: %s" % python)
+
     temporary = tempfile.mkdtemp(prefix="ddtracking-slicer-smoke-")
+    testDirectory = os.path.join(temporary, "paths containing spaces")
+    os.makedirs(testDirectory)
+    settingsPrefix = "DDTrackingSmoke/%s-%s/" % (os.getpid(), int(time.time() * 1000000))
     initialModelIDs = {node.GetID() for node in slicer.util.getNodesByClass("vtkMRMLModelNode")}
     initialVolumeIDs = {node.GetID() for node in slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")}
-    parent = qt.QWidget()
-    parent.setLayout(qt.QVBoxLayout())
-    widget = DDTrackingWidget(parent)
-    widget.setup()
-    widget.loadMniOutputs.checked = True
+    widget = slicer.modules.ddtracking.widgetRepresentation().self()
+    previousSettingsPrefix = widget.SETTINGS_PREFIX
+    widget.SETTINGS_PREFIX = settingsPrefix
 
     try:
-        test_itk_transform_convention(temporary)
+        widget.loadMniOutputs.checked = True
+        test_itk_transform_convention(testDirectory)
         inputFiles = {}
         for name in ("model.pt", "dwi.nii.gz", "dwi.bval", "dwi.bvec", "brain.nii.gz", "template.nii.gz"):
-            path = os.path.join(temporary, name)
+            path = os.path.join(testDirectory, name)
             with open(path, "wb") as stream:
                 stream.write(b"test")
             inputFiles[name] = path
@@ -153,25 +176,27 @@ def run_smoke_test():
         set_path(widget.bvecPath, inputFiles["dwi.bvec"])
         set_path(widget.brainMaskPath, inputFiles["brain.nii.gz"])
         set_path(widget.templatePath, inputFiles["template.nii.gz"])
-        set_path(widget.outputPath, temporary)
+        set_path(widget.outputPath, testDirectory)
+        for edit in (widget.wmMaskPath, widget.faPath, widget.trackingConfigPath):
+            edit.clear()
 
-        nativeVtp = os.path.join(temporary, "native.vtp")
-        mniVtp = os.path.join(temporary, "mni.vtp")
-        nativeFa = os.path.join(temporary, "native-fa.nii.gz")
-        registeredFa = os.path.join(temporary, "registered-fa.nii.gz")
-        template = os.path.join(temporary, "mni-template.nii.gz")
+        nativeVtp = os.path.join(testDirectory, "native.vtp")
+        mniVtp = os.path.join(testDirectory, "mni.vtp")
+        nativeFa = os.path.join(testDirectory, "native-fa.nii.gz")
+        registeredFa = os.path.join(testDirectory, "registered-fa.nii.gz")
+        template = os.path.join(testDirectory, "mni-template.nii.gz")
         for path in (nativeVtp, mniVtp):
             make_vtp(path)
         for path, name in ((nativeFa, "native FA"), (registeredFa, "registered FA"), (template, "template")):
             make_nifti(path, name)
 
-        firstResult = os.path.join(temporary, "first-result.json")
-        cancelledResult = os.path.join(temporary, "cancelled-result.json")
-        finalResult = os.path.join(temporary, "final-result.json")
+        firstResult = os.path.join(testDirectory, "first-result.json")
+        cancelledResult = os.path.join(testDirectory, "cancelled-result.json")
+        finalResult = os.path.join(testDirectory, "final-result.json")
         write_result(firstResult, nativeVtp, mniVtp, nativeFa, registeredFa, template)
         write_result(cancelledResult, nativeVtp, mniVtp, nativeFa, registeredFa, template)
         write_result(finalResult, nativeVtp, mniVtp, nativeFa, registeredFa, template)
-        helper = os.path.join(temporary, "helper.py")
+        helper = os.path.join(testDirectory, "helper.py")
         create_helper(helper)
 
         widget._arguments = lambda preprocessOnly=False: [helper, "success", firstResult]
@@ -217,7 +242,8 @@ def run_smoke_test():
         assert modelIDs == {node.GetID() for node in slicer.util.getNodesByClass("vtkMRMLModelNode")}, "Empty tractograms should not be loaded as model nodes"
     finally:
         widget.cleanup()
-        parent.deleteLater()
+        qt.QSettings().remove(settingsPrefix.rstrip("/"))
+        widget.SETTINGS_PREFIX = previousSettingsPrefix
         for nodeClass, existingIDs in (("vtkMRMLModelNode", initialModelIDs),
                                        ("vtkMRMLScalarVolumeNode", initialVolumeIDs)):
             for node in slicer.util.getNodesByClass(nodeClass):
@@ -227,5 +253,12 @@ def run_smoke_test():
         shutil.rmtree(temporary, ignore_errors=True)
 
 
-run_smoke_test()
-print("DDTracking Slicer smoke test passed")
+try:
+    run_smoke_test()
+except Exception:
+    traceback.print_exc()
+    print("DDTracking Slicer smoke test failed")
+    slicer.util.exit(1)
+else:
+    print("DDTracking Slicer smoke test passed")
+    slicer.util.exit(0)

@@ -434,14 +434,11 @@ class DDTrackingTest(ScriptedLoadableModuleTest):
         self.testWidgetSetup()
 
     def testWidgetSetup(self):
-        parent = qt.QWidget()
-        parent.setLayout(qt.QVBoxLayout())
-        widget = DDTrackingWidget(parent)
-        widget.setup()
+        # Slicer owns the widget lifetime; existing input preferences are retained.
+        widget = slicer.modules.ddtracking.widgetRepresentation().self()
         assert widget.runButton.text == "Run tracking"
         assert widget.preprocessButton.text == "Register FA only"
         assert widget.brainMaskPath is not None
         assert widget.trackingConfigPath is not None
-        assert widget.templatePath.text.endswith("MNI_FA_template.nii.gz")
-        widget.cleanup()
-        parent.deleteLater()
+        assert widget.templatePath is not None
+        assert os.path.isfile(widget._backendPath())

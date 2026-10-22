@@ -2,20 +2,37 @@
 
 本仓库包含一个 3D Slicer 模块，可从图形界面启动纤维追踪。Slicer 负责界面和加载原生空间结果；配准、特征准备和模型推理由独立的 Python 环境执行，避免把模型依赖安装进 Slicer 自带的 Python。
 
+## 版本兼容范围与源码安装
+
+DDTracking 是 Python scripted module，没有需要针对 Slicer 版本编译的 C++ 扩展，也没有限定 5.2.2 的版本号判断。同一份源码以使用 **Python 3 和 Qt 5** 的 Slicer **4.11 及 5.x** 为兼容目标，通过稳定的 `ScriptedLoadableModule`、Qt 和 MRML/VTK 接口运行。SimpleITK、DIPY 和 PyTorch 在独立后端中运行，不受 Slicer 内置 Python 版本影响。Python 2 时代的 Slicer 不支持；尚未发布或采用不同 Python/Qt 主版本的构建需要重新验证。
+
+已在 Linux 上实测 **4.11.20210226、5.2.2 和 5.12.4**，详见下方验证表；其他发行版和平台尚未逐一验证。安装方式遵循 Slicer 的源码模块工作流：将含有模块 `.py` 文件的目录添加到 Additional module paths。更多背景见官方 [Slicer 4.11 设置文档](https://slicer.readthedocs.io/en/v4.11/user_guide/settings.html)、[当前设置文档](https://slicer.readthedocs.io/en/latest/user_guide/settings.html) 和 [Python FAQ](https://slicer.readthedocs.io/en/5.6/developer_guide/python_faq.html)。
+
+本指南描述从源码运行模块，不是 Extensions Manager 安装包，也不要求使用 Slicer SDK 构建二进制。请保持仓库完整，以便模块从 `slicer/DDTracking` 相对定位 `slicer_backend/run.py` 和 `resources/MNI_FA_template.nii.gz`。
+
 ## 环境要求
 
-- 已安装 3D Slicer，并能访问 `slicer/DDTracking` 模块目录。Slicer 5.2.2 Linux 已通过 Xvfb 下的界面冒烟测试；其他版本和平台尚未验证。
-- 为后端准备独立的 Python 环境。建议使用 Python 3.9 或更高版本，并安装 [`../requirements-slicer-2026-10-22.txt`](../requirements-slicer-2026-10-22.txt) 中的依赖。
-- PyTorch 需单独安装。CPU 用户请从 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/) 选择 CPU wheel；CUDA 用户根据操作系统和 CUDA 环境选择合适的 wheel。所选 PyTorch 必须能在后端 Python 环境中运行；Slicer 本身不需要安装 PyTorch。
+- 已安装上述兼容范围内的 3D Slicer，并能访问 `slicer/DDTracking` 模块目录。
+- 为后端准备独立的 **Python 3.10** 环境，并安装 [`../requirements-slicer-2026-10-22.txt`](../requirements-slicer-2026-10-22.txt) 中的依赖。这个版本建议只针对后端，不要求更改 Slicer 内置 Python。
+- **PyTorch 2.4 或以上**需单独安装。CPU 用户请从 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/) 选择 CPU wheel；CUDA 用户根据操作系统和 CUDA 环境选择合适的 wheel。所选 PyTorch 必须能在后端 Python 环境中运行；Slicer 本身不需要安装 PyTorch。
 - 与数据匹配的 DDTracking 模型检查点。项目在 [GitHub v0.1 release](https://github.com/yishengpoxiao/DDTracking/releases/tag/v0.1) 提供模型权重（压缩包约 154 MB）。下载并解压后，在模块中选择对应的检查点文件。请保留权重的来源信息及其适用条款。
 
-从仓库根目录创建环境的示例：
+先获取完整仓库，也可从 GitHub 使用 **Code → Download ZIP** 后解压：
+
+```bash
+git clone https://github.com/yishengpoxiao/DDTracking.git
+cd DDTracking
+```
+
+从仓库根目录创建后端环境：
 
 ```bash
 conda create -n ddtracking-slicer python=3.10 pip -y
 conda activate ddtracking-slicer
 python -m pip install -r requirements-slicer-2026-10-22.txt
 # 再按上面的官方选择器安装 CPU 或适用于本机的 CUDA 版 PyTorch。
+python slicer_backend/run.py --check-dependencies
+python -c "import sys; print(sys.executable)"
 ```
 
 依赖文件没有列出 PyTorch，因为正确的安装包取决于运行设备。仅运行 Slicer 模块时不需要安装完整的 `requirements.yaml`；该文件还包含训练和其他用途的包。
@@ -23,12 +40,40 @@ python -m pip install -r requirements-slicer-2026-10-22.txt
 ## 在 Slicer 中安装模块
 
 1. 克隆或下载本仓库，并将其放在运行 Slicer 期间保持可用的位置。
-2. 在 Slicer 中打开 **Edit → Application Settings → Modules**，把仓库中的 `slicer/DDTracking` 目录加入 **Additional module paths**。
-3. 重启 Slicer，在模块选择器中打开 **DDTracking**。
-4. 在 **External Python** 中选择 `ddtracking-slicer` 环境里的 Python 可执行文件（Linux 通常是环境目录下的 `bin/python`；Windows 通常是 `python.exe`）。
-5. 选择必需输入文件和一个已经存在的输出目录。点击 **Register FA only** 可只计算/读取 FA 并执行配准，此模式不需要模型检查点；点击 **Run tracking** 则还需要选择匹配的模型检查点。
+2. 在 Slicer 中打开 **Edit → Application Settings → Modules → Additional module paths**。不同操作系统可能把设置入口放在应用菜单或称为 Preferences；添加下表中的**模块目录**：
+
+   | 系统 | 添加到 Additional module paths 的目录 |
+   | --- | --- |
+   | Windows | `C:\path\to\DDTracking\slicer\DDTracking` |
+   | Linux | `/path/to/DDTracking/slicer/DDTracking` |
+   | macOS | `/path/to/DDTracking/slicer/DDTracking` |
+
+   这里要添加的是直接包含 `DDTracking.py` 的 `slicer/DDTracking` 文件夹，**不是**仓库根目录，也不是 `slicer` 父目录。Slicer 会在启动时扫描额外模块目录；详见对应版本的官方设置文档。
+3. 重启 Slicer，在模块选择器中打开 **Diffusion → DDTracking**。升级或另装一个 Slicer 版本后，检查那个版本的模块路径；如果没有继承该设置，再添加同一目录。
+4. 在 **External Python** 中选择后端环境的 Python **可执行文件**，不要选择环境目录：Linux/macOS conda 环境通常是 `<env>/bin/python`，Windows 通常是 `<env>\python.exe`。若不确定具体路径，在该后端环境激活后运行 `python -c "import sys; print(sys.executable)"`，再把输出路径填入。请勿用 Slicer Python Console 中的 `sys.executable`，它指向 Slicer 自带 Python。Slicer 与后端各自使用自己的 Python；无需在 Slicer 内安装 PyTorch、DIPY 或后端 requirements。
+5. 选择必需输入文件和一个已经存在的输出目录。建议先点 **Register FA only**，检查配准后的 FA 与模板；确认配准 QC 后，再选择匹配的模型检查点并点 **Run tracking**。FA-only 模式不需要模型检查点。
+
+源码目录示例：
+
+```text
+DDTracking/                 # 保持整个仓库布局，模块通过它定位后端和默认模板
+├── resources/
+├── slicer_backend/
+└── slicer/
+    └── DDTracking/         # 添加到 Slicer 的 Additional module paths
+        └── DDTracking.py
+```
 
 模块会异步启动后端，因此运行时 Slicer 仍可响应。日志区域显示后端输出和错误；点击 **Cancel** 可请求终止运行进程。成功完成后，模块会把原生空间纤维加载到当前场景中。结果图像和变换文件保存在输出目录；勾选 QC 选项还可加载配准后的 FA 和 MNI 空间纤维。
+
+路径含空格时，在文件选择框里使用完整路径即可，**不要**在路径两侧手动加引号。模块通过 Qt `QProcess` 将程序和参数分开传递。若提示后端不存在，请确认没有只复制 `slicer/DDTracking` 子目录，并且仓库根目录下仍有 `slicer_backend/run.py` 与 `resources/MNI_FA_template.nii.gz`。
+
+### 常见安装问题
+
+- **模块列表里没有 DDTracking：** 检查添加的是包含 `DDTracking.py` 的 `slicer/DDTracking` 目录，重启 Slicer，并在 Modules 设置页查看模块是否被忽略或加载失败。也可查看 Slicer 启动日志中的 Python 错误。
+- **外部进程无法启动或依赖检查失败：** `External Python` 必须是后端环境中的可执行文件。先在终端对该环境运行 `python slicer_backend/run.py --check-dependencies`；CPU/CUDA 版 PyTorch 必须安装在同一个环境中。
+- **模板或后端文件找不到：** 保留完整仓库结构，并从该源码 checkout 加载模块。不要将模块文件单独复制到一个脱离仓库的位置。
+- **更换或升级 Slicer 后模块消失：** 在新安装的 Slicer 设置里重新添加模块目录并重启。源码模块无版本专用二进制，但仍需对目标 Slicer 版本进行本机验证。
 
 ## 输入数据
 
@@ -73,7 +118,15 @@ python slicer_backend/run.py \
 
 ## 验证状态
 
-Slicer 5.2.2 Linux 在 Xvfb 下已通过界面集成测试，覆盖模块界面初始化、分块 QProcess 结果标记读取、取消后重启、RAS VTP 加载、ITK 变换求逆和零纤维结果。已另外验证从插件界面启动真实后端、使用发布检查点完成合成数据追踪，并自动将纤维加载到场景的完整流程。
+以下官方 Linux x86_64 版本已在 Xvfb 下通过测试，进程均正常退出。使用相同的插件源码和独立后端环境：
+
+| Slicer | 内置 Python | Qt | VTK | 模块安装与界面测试 | 真实后端合成数据追踪 |
+| --- | --- | --- | --- | --- | --- |
+| 4.11.20210226 | 3.6.7 | 5.15.1 | 8.2.0 | 通过 | 通过，含 FA-only 配准 |
+| 5.2.2 | 3.9.10 | 5.15.2 | 9.1.0 | 通过 | 通过 |
+| 5.12.4 | 3.12.10 | 5.15.2 | 9.6.2 | 通过 | 通过，含 FA-only 配准 |
+
+界面测试覆盖 Additional module paths 自动发现、Slicer 实际创建的模块界面、含空格路径、分块 QProcess 结果标记、取消后重启、RAS VTP 加载、ITK 变换求逆和零纤维结果。测试使用独立的设置命名空间，不覆盖用户保存的 DDTracking 输入路径。真实后端测试从界面计算 FA、配准、使用发布检查点追踪，并将非空纤维加载到场景。外部后端实测环境为 Python 3.9.19 / PyTorch 2.4.1；上文的新安装示例选用 Python 3.10。
 
 CPU 合成数据全流程测试使用公开发布的检查点，自动计算 FA、完成刚性配准和追踪，并导出非空原生/MNI 纤维；测试验证纤维长度和两种空间的坐标一致性。可按以下命令重跑（`--model` 指向下载并解压后的发布检查点）：
 
@@ -82,7 +135,27 @@ python tests/synthetic_pipeline.py --model /path/to/weights.pt
 python -m unittest discover -s tests -v
 ```
 
-Slicer 界面测试可通过 `Slicer --no-main-window --testing --python-script /absolute/path/to/DDTracking/tests/slicer_smoke.py` 运行。源码安装已经验证；CMake 扩展构建文件已提供，尚未完成使用 Slicer SDK 的正式扩展打包或提交到 Extensions Index。
+对目标 Slicer 运行下面的界面测试；请将两个仓库路径都替换为自己的绝对路径。Windows 使用 `Slicer.exe`；macOS 的可执行文件通常是 `/Applications/Slicer.app/Contents/MacOS/Slicer`。
+
+```bash
+/path/to/Slicer --ignore-slicerrc --disable-settings --no-main-window --testing \
+  --additional-module-paths /absolute/path/to/DDTracking/slicer/DDTracking \
+  --python-script /absolute/path/to/DDTracking/tests/slicer_smoke.py
+```
+
+测试需要能从启动 Slicer 时的 PATH 找到独立 Python，也可通过环境变量 `DDTRACKING_TEST_PYTHON` 指定其可执行文件；该轻量测试只运行标准库进程辅助脚本，不需要模型或后端依赖。测试打印 Slicer/Python/Qt/VTK 版本，成功输出 `DDTracking Slicer smoke test passed` 并返回退出码 0，失败返回非零。仅看到通过文字但进程异常退出不算完整通过。
+
+源码安装已经验证；CMake 扩展构建文件已提供，尚未完成使用 Slicer SDK 的正式扩展打包或提交到 Extensions Index。如果自行构建二进制扩展包，需要使用对应 Slicer 版本的 SDK；跨版本使用请优先采用上述源码安装。
+
+在 Linux 无头环境且已安装 Xvfb 时，可运行：
+
+```bash
+xvfb-run -a /path/to/Slicer --ignore-slicerrc --disable-settings --no-main-window --testing \
+  --additional-module-paths /absolute/path/to/DDTracking/slicer/DDTracking \
+  --python-script /absolute/path/to/DDTracking/tests/slicer_smoke.py
+```
+
+Windows/macOS 与其他 Slicer 版本可使用同一源码安装步骤，并运行本仓库的界面测试记录该平台/版本的验证结果。兼容目标不等于已逐一测试所有历史和未来版本。
 
 CUDA、Windows 和 macOS 尚未测试；真实受试者数据上的配准/追踪等价性也尚未评估。
 

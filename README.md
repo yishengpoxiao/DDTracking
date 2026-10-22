@@ -54,6 +54,13 @@ tar -xzvf weights.tar.gz
 
 This repository also includes a 3D Slicer module for running DDTracking from a graphical interface. It launches an external Python backend so that Slicer and the model environment can use their own Python installations. See the [Slicer module guide](slicer/README.md) for installation, environment setup, inputs, defaults, and output details. The focused backend dependency list is [requirements-slicer-2026-10-22.txt](requirements-slicer-2026-10-22.txt); install a CPU or CUDA build of PyTorch separately as described there.
 
+The same source module targets **Slicer 4.11 and 5.x with Python 3/Qt 5**; it is not restricted to 5.2.2 and requires no version-specific binary build. Module discovery, the real module interface, external processes, cancellation/restart, and result loading were tested on **Linux Slicer 4.11.20210226, 5.2.2, and 5.12.4**. Other releases and Windows/macOS have not been individually tested. See the [compatibility table and installation guide](slicer/README.md).
+
+1. Clone or download the **whole repository**, preserving its directory layout.
+2. Create the external Python environment described in the guide, install backend dependencies and PyTorch, and download the model weights.
+3. In Slicer, open **Edit → Application Settings → Modules → Additional module paths** and add `<repository>/slicer/DDTracking`, the folder containing `DDTracking.py`. Restart Slicer and select **Diffusion → DDTracking**. Check this path again when switching Slicer installations.
+4. Set **External Python** to the environment's executable. Select DWI, b-values, b-vectors, brain mask and output folder. Run **Register FA only** to inspect alignment, then select the checkpoint and **Run tracking**.
+
 The Slicer workflow estimates or accepts an FA image, rigidly registers it to the repository's MNI FA template, tracks in template space, and maps streamlines back to native DWI space. This registration implementation is not numerically identical to the original FSL and ANTs preprocessing workflow. Validate registration and tractography quality on the data and model you use; equivalence on real data has not been established here.
 
 ---
