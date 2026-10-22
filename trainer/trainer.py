@@ -226,7 +226,7 @@ class Trainer:
         self.early_stopping_patience = int(self.params['early_stopping_patience'])
         self.loss_type = self.params['loss_type']
         
-        self.T_max = int(self.params.get('T_max', 100))  # 默认周期为总 epoch 数
+        self.T_max = int(self.params.get('T_max', 100))  # Cycle length in epochs.
         self.eta_min = float(self.params.get('eta_min', 1e-6))
 
         self.model_weights_save_dir = self.params['model_weights_save_dir']

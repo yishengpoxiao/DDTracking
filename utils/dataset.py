@@ -128,7 +128,7 @@ class TractographyData(object):
         # Preprocess DWI volumes
         self.preprocess_dwi()
 
-        # test mean normalize 03-19
+        # Optional intensity normalization.
         # self.volume = minmax_normalize(self.volume, self.brain_mask).astype(np.float32)
         # self.volume = zero_mean_unit_variance_normalize(self.volume, mask=self.brain_mask, per_channel=False).astype(np.float32)
         self.volume = mask_dwi(self.volume, self.brain_mask).astype(np.float32)

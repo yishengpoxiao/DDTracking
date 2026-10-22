@@ -23,16 +23,15 @@ source ~/miniconda3/bin/activate
 ### 2. Create and Activate Conda Environment
 
 ```
-conda env create -f requirements-2026-10-22.yaml
+conda env create -f requirements.yaml
 conda activate DDTracking
 ```
 
 Install PyTorch 2.4 or newer for your CPU/CUDA platform using the
 [official installation instructions](https://pytorch.org/get-started/locally/).
 The fixes below were tested with PyTorch 2.4.1. PyTorch is installed separately
-so the environment does not mix incompatible CUDA and CPU packages. The original
-`requirements.yaml` is preserved; the dated environment replaces its machine-specific
-package dump and invalid pip `pytorch` entry.
+so the environment does not mix incompatible CUDA and CPU packages.
+`requirements.yaml` contains the shared training and tracking dependencies.
 
 ---
 
@@ -52,7 +51,7 @@ tar -xzvf weights.tar.gz
 
 ### 3D Slicer tracking module
 
-This repository also includes a 3D Slicer module for running DDTracking from a graphical interface. It launches an external Python backend so that Slicer and the model environment can use their own Python installations. See the [Slicer module guide](slicer/README.md) for installation, environment setup, inputs, defaults, and output details. The focused backend dependency list is [requirements-slicer-2026-10-22.txt](requirements-slicer-2026-10-22.txt); install a CPU or CUDA build of PyTorch separately as described there.
+This repository also includes a 3D Slicer module for running DDTracking from a graphical interface. It launches an external Python backend so that Slicer and the model environment can use their own Python installations. See the [Slicer module guide](slicer/README.md) for installation, environment setup, inputs, defaults, and output details. The focused backend dependency list is [requirements-slicer.txt](requirements-slicer.txt); install a CPU or CUDA build of PyTorch separately as described there.
 
 The same source module targets **Slicer 4.11 and 5.x with Python 3/Qt 5**; it is not restricted to 5.2.2 and requires no version-specific binary build. Module discovery, the real module interface, external processes, cancellation/restart, and result loading were tested on **Linux Slicer 4.11.20210226, 5.2.2, and 5.12.4**. Other releases and Windows/macOS have not been individually tested. See the [compatibility table and installation guide](slicer/README.md).
 
@@ -94,10 +93,10 @@ This step prepares your diffusion data for subsequent analysis.
 To perform tractography using a pre-trained model:
 
 ```
-python tractography.py --config example_tracking_config-2026-10-22.yaml --track
+python tractography.py --config example_tracking_config.yaml --track
 ```
 
-Copy the dated configuration to a new local file and set its input paths before
+Copy the example configuration to a new local file and set its input paths before
 running. DWI gradients must have exactly the same filename stem, with `.bval`/`.bvals`
 and `.bvec`/`.bvecs` extensions. Masks must match the DWI shape and affine. The
 original command expects preprocessed, single-shell MNI data; use the Slicer
@@ -129,11 +128,11 @@ dataset/
 Then run distributed training:
 
 ```
-CUDA_VISIBLE_DEVICES=0,1,... torchrun --nproc_per_node=<NUM_GPUS> tractography.py --config example_training_config-2026-10-22.yaml --train
+CUDA_VISIBLE_DEVICES=0,1,... torchrun --nproc_per_node=<NUM_GPUS> tractography.py --config example_training_config.yaml --train
 ```
 
 Replace `<NUM_GPUS>` with the number of available GPUs and use a local copy of the
-dated training template with your dataset paths. For a single process, run
+training template with your dataset paths. For a single process, run
 `python tractography.py --config <your-training-config.yaml> --train`.
 `num_workers: 0` is supported for small datasets or CPU debugging.
 

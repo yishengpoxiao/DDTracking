@@ -1,105 +1,105 @@
-# 在 3D Slicer 中使用 DDTracking
+# Using DDTracking in 3D Slicer
 
-本仓库包含一个 3D Slicer 模块，可从图形界面启动纤维追踪。Slicer 负责界面和加载原生空间结果；配准、特征准备和模型推理由独立的 Python 环境执行，避免把模型依赖安装进 Slicer 自带的 Python。
+This repository includes a 3D Slicer module that starts fiber tracking from the Slicer interface. Slicer provides the interface and loads results in native space. Registration, feature preparation, and model inference run in a separate Python environment, so the model dependencies do not need to be installed into Slicer's bundled Python.
 
-## 版本兼容范围与源码安装
+## Compatibility and source installation
 
-DDTracking 是 Python scripted module，没有需要针对 Slicer 版本编译的 C++ 扩展，也没有限定 5.2.2 的版本号判断。同一份源码以使用 **Python 3 和 Qt 5** 的 Slicer **4.11 及 5.x** 为兼容目标，通过稳定的 `ScriptedLoadableModule`、Qt 和 MRML/VTK 接口运行。SimpleITK、DIPY 和 PyTorch 在独立后端中运行，不受 Slicer 内置 Python 版本影响。Python 2 时代的 Slicer 不支持；尚未发布或采用不同 Python/Qt 主版本的构建需要重新验证。
+DDTracking is a Python scripted module. It has no C++ extension that must be compiled for a particular Slicer version, and the code does not check for version 5.2.2 specifically. The compatibility target is Slicer **4.11 and 5.x** builds that use **Python 3 and Qt 5** and provide the `ScriptedLoadableModule`, Qt, and MRML/VTK APIs used by the module. SimpleITK, DIPY, and PyTorch run in the separate backend and do not depend on Slicer's bundled Python version. Python 2-era Slicer releases are unsupported; builds that have not been released yet or use a different major Python/Qt version need to be checked separately.
 
-已在 Linux 上实测 **4.11.20210226、5.2.2 和 5.12.4**，详见下方验证表；其他发行版和平台尚未逐一验证。安装方式遵循 Slicer 的源码模块工作流：将含有模块 `.py` 文件的目录添加到 Additional module paths。更多背景见官方 [Slicer 4.11 设置文档](https://slicer.readthedocs.io/en/v4.11/user_guide/settings.html)、[当前设置文档](https://slicer.readthedocs.io/en/latest/user_guide/settings.html) 和 [Python FAQ](https://slicer.readthedocs.io/en/5.6/developer_guide/python_faq.html)。
+The following official Linux builds have been tested: **4.11.20210226, 5.2.2, and 5.12.4**. See the test matrix below; other releases and platforms have not all been checked. Installation follows Slicer's source-module workflow: add the directory containing the module `.py` file to Additional module paths. See the official [Slicer 4.11 settings guide](https://slicer.readthedocs.io/en/v4.11/user_guide/settings.html), [current settings guide](https://slicer.readthedocs.io/en/latest/user_guide/settings.html), and [Python FAQ](https://slicer.readthedocs.io/en/5.6/developer_guide/python_faq.html).
 
-本指南描述从源码运行模块，不是 Extensions Manager 安装包，也不要求使用 Slicer SDK 构建二进制。请保持仓库完整，以便模块从 `slicer/DDTracking` 相对定位 `slicer_backend/run.py` 和 `resources/MNI_FA_template.nii.gz`。
+This guide describes running the module from source. It is not an Extensions Manager package and does not require building a binary with the Slicer SDK. Keep the repository layout intact so the module can locate `slicer_backend/run.py` and `resources/MNI_FA_template.nii.gz` relative to `slicer/DDTracking`.
 
-## 环境要求
+## Requirements
 
-- 已安装上述兼容范围内的 3D Slicer，并能访问 `slicer/DDTracking` 模块目录。
-- 为后端准备独立的 **Python 3.10** 环境，并安装 [`../requirements-slicer-2026-10-22.txt`](../requirements-slicer-2026-10-22.txt) 中的依赖。这个版本建议只针对后端，不要求更改 Slicer 内置 Python。
-- **PyTorch 2.4 或以上**需单独安装。CPU 用户请从 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/) 选择 CPU wheel；CUDA 用户根据操作系统和 CUDA 环境选择合适的 wheel。所选 PyTorch 必须能在后端 Python 环境中运行；Slicer 本身不需要安装 PyTorch。
-- 与数据匹配的 DDTracking 模型检查点。项目在 [GitHub v0.1 release](https://github.com/yishengpoxiao/DDTracking/releases/tag/v0.1) 提供模型权重（压缩包约 154 MB）。下载并解压后，在模块中选择对应的检查点文件。请保留权重的来源信息及其适用条款。
+- An installed 3D Slicer within the compatibility target above, with access to the `slicer/DDTracking` module directory.
+- A separate **Python 3.10** environment for the backend, with the dependencies in [`../requirements-slicer.txt`](../requirements-slicer.txt). This Python version is recommended for the backend; Slicer's bundled Python does not need to be changed.
+- **PyTorch 2.4 or later**, installed separately. Use the [official PyTorch installation selector](https://pytorch.org/get-started/locally/) to choose a CPU wheel or a CUDA wheel appropriate for your operating system and CUDA setup. The selected build must run in the backend environment. PyTorch is not required inside Slicer.
+- A DDTracking checkpoint that matches your data. Model weights are available from the [GitHub v0.1 release](https://github.com/yishengpoxiao/DDTracking/releases/tag/v0.1) (archive approximately 154 MB). Download and extract the checkpoint, then select it in the module. Preserve the checkpoint's source and applicable terms.
 
-先获取完整仓库，也可从 GitHub 使用 **Code → Download ZIP** 后解压：
+Clone or download the complete repository from GitHub:
 
 ```bash
 git clone https://github.com/yishengpoxiao/DDTracking.git
 cd DDTracking
 ```
 
-从仓库根目录创建后端环境：
+Create the backend environment from the repository root:
 
 ```bash
 conda create -n ddtracking-slicer python=3.10 pip -y
 conda activate ddtracking-slicer
-python -m pip install -r requirements-slicer-2026-10-22.txt
-# 再按上面的官方选择器安装 CPU 或适用于本机的 CUDA 版 PyTorch。
+python -m pip install -r requirements-slicer.txt
+# Install the CPU or CUDA build of PyTorch using the official selector above.
 python slicer_backend/run.py --check-dependencies
 python -c "import sys; print(sys.executable)"
 ```
 
-依赖文件没有列出 PyTorch，因为正确的安装包取决于运行设备。仅运行 Slicer 模块时不需要安装完整的 `requirements.yaml`；该文件还包含训练和其他用途的包。
+PyTorch is not listed in the requirements file because the right package depends on the device. You do not need the full `requirements.yaml` to run the Slicer module; it contains packages for training and other uses as well.
 
-## 在 Slicer 中安装模块
+## Install the module in Slicer
 
-1. 克隆或下载本仓库，并将其放在运行 Slicer 期间保持可用的位置。
-2. 在 Slicer 中打开 **Edit → Application Settings → Modules → Additional module paths**。不同操作系统可能把设置入口放在应用菜单或称为 Preferences；添加下表中的**模块目录**：
+1. Clone or download this repository and keep it in a location that remains available while Slicer is running.
+2. In Slicer, open **Edit → Application Settings → Modules → Additional module paths**. Depending on the operating system, the settings entry may be under the application menu or named Preferences. Add the **module directory** shown below:
 
-   | 系统 | 添加到 Additional module paths 的目录 |
+   | Operating system | Directory to add to Additional module paths |
    | --- | --- |
    | Windows | `C:\path\to\DDTracking\slicer\DDTracking` |
    | Linux | `/path/to/DDTracking/slicer/DDTracking` |
    | macOS | `/path/to/DDTracking/slicer/DDTracking` |
 
-   这里要添加的是直接包含 `DDTracking.py` 的 `slicer/DDTracking` 文件夹，**不是**仓库根目录，也不是 `slicer` 父目录。Slicer 会在启动时扫描额外模块目录；详见对应版本的官方设置文档。
-3. 重启 Slicer，在模块选择器中打开 **Diffusion → DDTracking**。升级或另装一个 Slicer 版本后，检查那个版本的模块路径；如果没有继承该设置，再添加同一目录。
-4. 在 **External Python** 中选择后端环境的 Python **可执行文件**，不要选择环境目录：Linux/macOS conda 环境通常是 `<env>/bin/python`，Windows 通常是 `<env>\python.exe`。若不确定具体路径，在该后端环境激活后运行 `python -c "import sys; print(sys.executable)"`，再把输出路径填入。请勿用 Slicer Python Console 中的 `sys.executable`，它指向 Slicer 自带 Python。Slicer 与后端各自使用自己的 Python；无需在 Slicer 内安装 PyTorch、DIPY 或后端 requirements。
-5. 选择必需输入文件和一个已经存在的输出目录。建议先点 **Register FA only**，检查配准后的 FA 与模板；确认配准 QC 后，再选择匹配的模型检查点并点 **Run tracking**。FA-only 模式不需要模型检查点。
+   Add the `slicer/DDTracking` folder that directly contains `DDTracking.py`—**not** the repository root and not its `slicer` parent folder. Slicer scans additional module directories at startup; see the official settings guide for your version.
+3. Restart Slicer and open **Diffusion → DDTracking** from the module selector. After upgrading or installing another Slicer version, check that version's module-path settings and add the same directory if the setting was not carried over.
+4. Under **External Python**, select the backend environment's Python **executable**, not the environment directory. A Conda environment is usually `<env>/bin/python` on Linux/macOS and `<env>\python.exe` on Windows. If you are unsure of the exact path, activate the backend environment and run `python -c "import sys; print(sys.executable)"`, then enter the printed path. Do not use `sys.executable` from Slicer's Python console: that points to Slicer's bundled Python. Slicer and the backend use separate Python environments, so PyTorch, DIPY, and the backend requirements do not need to be installed in Slicer.
+5. Select the required input files and an output directory that already exists. We recommend clicking **Register FA only** first and checking the registered FA against the template. After confirming registration QC, select the matching model checkpoint and click **Run tracking**. FA-only mode does not require a checkpoint.
 
-源码目录示例：
+The source tree should remain in this layout:
 
 ```text
-DDTracking/                 # 保持整个仓库布局，模块通过它定位后端和默认模板
-├── resources/
-├── slicer_backend/
+DDTracking/                 # Keep the complete repository layout
+├── resources/              # Default MNI template
+├── slicer_backend/         # External Python backend
 └── slicer/
-    └── DDTracking/         # 添加到 Slicer 的 Additional module paths
+    └── DDTracking/         # Add this directory to Slicer's module paths
         └── DDTracking.py
 ```
 
-模块会异步启动后端，因此运行时 Slicer 仍可响应。日志区域显示后端输出和错误；点击 **Cancel** 可请求终止运行进程。成功完成后，模块会把原生空间纤维加载到当前场景中。结果图像和变换文件保存在输出目录；勾选 QC 选项还可加载配准后的 FA 和 MNI 空间纤维。
+The module launches the backend asynchronously, so Slicer remains responsive during a run. The log area displays backend output and errors; **Cancel** requests that the process stop. On success, the module loads the native-space fibers into the current scene. Images and transform files are saved in the output directory; enable the QC option to also load the registered FA and MNI-space fibers.
 
-路径含空格时，在文件选择框里使用完整路径即可，**不要**在路径两侧手动加引号。模块通过 Qt `QProcess` 将程序和参数分开传递。若提示后端不存在，请确认没有只复制 `slicer/DDTracking` 子目录，并且仓库根目录下仍有 `slicer_backend/run.py` 与 `resources/MNI_FA_template.nii.gz`。
+Paths containing spaces are supported. Use the full path in the file chooser and **do not** add quotation marks around it. The module uses Qt `QProcess` to pass the program and arguments separately. If the backend cannot be found, make sure you did not copy only the `slicer/DDTracking` subdirectory and that `slicer_backend/run.py` and `resources/MNI_FA_template.nii.gz` are still present at the repository root.
 
-### 常见安装问题
+### Troubleshooting installation
 
-- **模块列表里没有 DDTracking：** 检查添加的是包含 `DDTracking.py` 的 `slicer/DDTracking` 目录，重启 Slicer，并在 Modules 设置页查看模块是否被忽略或加载失败。也可查看 Slicer 启动日志中的 Python 错误。
-- **外部进程无法启动或依赖检查失败：** `External Python` 必须是后端环境中的可执行文件。先在终端对该环境运行 `python slicer_backend/run.py --check-dependencies`；CPU/CUDA 版 PyTorch 必须安装在同一个环境中。
-- **模板或后端文件找不到：** 保留完整仓库结构，并从该源码 checkout 加载模块。不要将模块文件单独复制到一个脱离仓库的位置。
-- **更换或升级 Slicer 后模块消失：** 在新安装的 Slicer 设置里重新添加模块目录并重启。源码模块无版本专用二进制，但仍需对目标 Slicer 版本进行本机验证。
+- **DDTracking is missing from the module list:** Check that you added `slicer/DDTracking`, the directory containing `DDTracking.py`, then restart Slicer. In the Modules settings, check whether the module was ignored or failed to load. Slicer's startup log may contain a Python error.
+- **The external process will not start or dependency checks fail:** **External Python** must point to an executable in the backend environment. Run `python slicer_backend/run.py --check-dependencies` using that environment. The CPU or CUDA build of PyTorch must be installed in the same environment.
+- **The backend or template cannot be found:** Keep the complete repository layout and load the module from that checkout. Do not copy the module files by themselves to a location outside the repository.
+- **The module disappears after changing or upgrading Slicer:** Add the module directory in the new Slicer installation's settings and restart it. Source installation requires no version-specific binary, but the target Slicer build still needs local verification.
 
-## 输入数据
+## Input data
 
-必须提供单被试 DWI NIfTI 图像（`.nii` 或 `.nii.gz`）、与其匹配的 FSL 格式 `.bval` 和 `.bvec` 文本文件，以及处于同一原生空间的脑掩膜。b 值和 b 向量的数量必须与 DWI 第四维的体积数一致。b 向量文件可以是 3 行或 3 列；方向需符合该图像对应的 FSL 坐标约定。请确认图像、梯度和掩膜来自同一次采集且几何位置一致。
+Required inputs are a single-subject DWI NIfTI image (`.nii` or `.nii.gz`), its matching FSL-format `.bval` and `.bvec` text files, and a brain mask in the same native space. The number of b-values and b-vectors must match the number of volumes in the fourth DWI dimension. The b-vector file may have three rows or three columns; its directions must follow the FSL coordinate convention associated with that image. Confirm that the image, gradients, and mask come from the same acquisition and have matching geometry.
 
-白质掩膜和预先计算的 FA 图像是可选项。若未提供 FA，后端会使用 b=0 体积以及所选的单一扩散壳层拟合张量并计算 FA。若未提供白质掩膜，追踪器使用 **GA>0.18** 生成种子，并以 **FA>0.15** 作为终止边界；提供白质掩膜时则使用该掩膜播种并作为边界。无论是否提供上述可选项，都必须提供脑掩膜。
+A white-matter mask and a precomputed FA image are optional. If FA is not provided, the backend fits a tensor and computes FA from the b=0 volumes and the selected single diffusion shell. If no white-matter mask is supplied, the tracker uses **GA > 0.18** for seeding and **FA > 0.15** as the stopping boundary. If a white-matter mask is supplied, it is used for both seeding and the tracking boundary. A brain mask is required in either case.
 
-默认选择 **1000 s/mm²** 壳层，容差为 **±100 s/mm²**；用于张量拟合的 b=0 体积默认满足 b≤**50 s/mm²**。若数据中没有 b=0 体积，或所选壳层没有扩散方向，则默认设置无法处理。运行前请核对采集数据中的 b 值。
+The default shell is **1000 s/mm²** with a tolerance of **±100 s/mm²**. For tensor fitting, b=0 volumes default to b≤**50 s/mm²**. The default settings cannot process data without a b=0 volume or diffusion directions in the selected shell. Check the acquisition's b-values before running.
 
-默认模型使用 SH 阶数 6，需要所选壳层中至少 **28 个能张成该 SH 特征空间的独立方向**；仅满足方向数量但采样方向退化也会被拒绝。FA 的张量拟合至少需要 6 个可确定张量的扩散方向，因此只做配准时对方向采样的要求较低。
+The default model uses SH order 6 and requires at least **28 independent directions** in the selected shell that span the SH feature space. A sufficient count with degenerate sampling directions is also rejected. Tensor fitting for FA requires at least 6 diffusion directions that determine the tensor, so preprocessing-only mode has a lower direction-sampling requirement.
 
-## 默认追踪参数
+## Default tracking parameters
 
-默认每个符合条件的体素生成 **1 个种子**，步长为 **0.5 个体素**，最大转角 **45°**，纤维长度范围 **40–200 mm**，每批处理 **1024 个种子**。设备默认是 CPU；如果后端环境安装了可用的 CUDA 版 PyTorch，可在设备字段中选择 `cuda:0`。显存不足时可调小批次大小；CPU 运行可能耗时较长。开始运行前可在模块中修改这些参数。
+Defaults are **1 seed per eligible voxel**, a step size of **0.5 voxel**, a maximum turning angle of **45°**, a fiber length range of **40–200 mm**, and **1024 seeds per batch**. The default device is CPU. If the backend environment has a working CUDA build of PyTorch, select `cuda:0` in the device field. Reduce the batch size if GPU memory is insufficient; CPU runs may take longer. These values can be changed in the module before a run.
 
-## 配准和输出
+## Registration and outputs
 
-默认模板为仓库内的 `resources/MNI_FA_template.nii.gz`。后端通过 SimpleITK 估计原生 FA 到模板的刚性配准变换，将 DWI 和掩膜重采样到模板空间，并按同一刚性变换旋转扩散梯度。随后在模板空间执行追踪，再将纤维映射回原生 DWI 空间，以便在 Slicer 中显示和用于后续分析。
+The default template is `resources/MNI_FA_template.nii.gz` in the repository. The backend uses SimpleITK to estimate a rigid transform from native FA to the template, resamples the DWI and masks into template space, and rotates the diffusion gradients with the same rigid transform. Tracking then runs in template space, and fibers are mapped back to native DWI space for display in Slicer and downstream analysis.
 
-每次运行都会在指定输出目录下创建独立的子目录，其中包含带日期的运行配置、后端日志、结果清单、原生空间和 MNI 空间的 VTP 与 TRK 纤维、原生 FA、配准后的 FA、模板引用以及原生到 MNI 的变换。VTP 使用 RAS 坐标并包含 `SPACE=RAS` 字段；Slicer 模块将其点坐标直接作为 RAS 加载。清单提供 `native_vtp`、`mni_vtp`、`native_trk`、`mni_trk`、`native_fa`、`registered_fa`、`template` 和 `native_to_mni_transform` 路径。结果准备完成后，后端会输出 `DDTRACKING_RESULT=/path/to/result.json` 行。
+Each run creates a unique `DDTracking-<random suffix>` subdirectory inside the selected output directory. It contains `inputs.json`, `run.log`, `result.json`, native FA, registered FA, and transforms. Tracking runs also write `tracking.yaml` and native- and MNI-space VTP and TRK fibers. VTP uses RAS coordinates and includes a `SPACE=RAS` field; the Slicer module loads its point coordinates directly as RAS. The result manifest includes paths for `native_fa`, `registered_fa`, `template`, and `native_to_mni_transform`; tracking results also include `native_vtp`, `mni_vtp`, `native_trk`, and `mni_trk`. Once results are ready, the backend prints a line of the form `DDTRACKING_RESULT=/path/to/result.json`.
 
-请将配准后的 FA 与模板对照检查，并在解释追踪结果前检查原生空间纤维。这里的刚性配准流程是新实现，与仓库原先基于 FSL 和 ANTs 的预处理在数值上并不完全相同；目前没有在真实数据上测量二者的等价性。配准错误、梯度坐标约定错误，或检查点训练时使用了不同预处理，都可能影响纤维结果。
+Compare registered FA with the template and inspect native-space fibers before interpreting tracking results. This new rigid-registration workflow is not numerically identical to the repository's original FSL/ANTs preprocessing, and equivalence between the two has not been measured on real data. Registration errors, an incorrect gradient-coordinate convention, or preprocessing that differs from that used for the checkpoint can affect the fibers.
 
-## 后端命令行
+## Backend command line
 
-图形界面调用 `slicer_backend/run.py`。也可从仓库根目录直接运行后端以排查问题：
+The graphical interface calls `slicer_backend/run.py`. You can also run the backend from the repository root to troubleshoot:
 
 ```bash
 python slicer_backend/run.py \
@@ -112,30 +112,30 @@ python slicer_backend/run.py \
   --device cpu
 ```
 
-可选参数包括 `--wm-mask`、`--fa`、`--template`、`--tracking-config`、`--shell`、`--shell-tolerance`、`--seeds`、`--step-size`、`--max-angle`、`--min-length`、`--max-length`、`--batch-size` 和 `--device`。请运行 `python slicer_backend/run.py --help` 查看当前代码实际提供的完整参数。
+Optional arguments include `--wm-mask`, `--fa`, `--template`, `--tracking-config`, `--shell`, `--shell-tolerance`, `--seeds`, `--step-size`, `--max-angle`, `--min-length`, `--max-length`, `--batch-size`, and `--device`. Run `python slicer_backend/run.py --help` for the full argument list supported by the current code.
 
-运行 `python slicer_backend/run.py --check-dependencies` 可检查后端环境依赖。若只需执行 FA 计算和配准以检查 QC，可加 `--preprocess-only`，此模式不需要模型检查点。官方发布的模型按默认架构配置；若使用按其他架构训练的检查点，需提供匹配的追踪配置（`--tracking-config`），否则模型参数可能无法正确加载。配置文件仅用于模型架构和输入特征参数；本次运行的路径及界面追踪参数仍由命令行或 Slicer 界面提供。
+Run `python slicer_backend/run.py --check-dependencies` to check backend dependencies. To compute or load FA and perform registration for QC without tracking, add `--preprocess-only`; this mode does not need a model checkpoint. The official checkpoint uses the default architecture. If you use a checkpoint trained with a different architecture, provide its matching tracking configuration with `--tracking-config`, or its model parameters may not load correctly. The configuration specifies model architecture and input-feature parameters; paths and runtime tracking options come from the command line or Slicer interface.
 
-## 验证状态
+## Validation status
 
-以下官方 Linux x86_64 版本已在 Xvfb 下通过测试，进程均正常退出。使用相同的插件源码和独立后端环境：
+The following official Linux x86_64 builds passed testing under Xvfb, and each process exited normally. The same plugin source and a separate backend environment were used:
 
-| Slicer | 内置 Python | Qt | VTK | 模块安装与界面测试 | 真实后端合成数据追踪 |
+| Slicer | Bundled Python | Qt | VTK | Module discovery and UI test | Synthetic tracking with real backend |
 | --- | --- | --- | --- | --- | --- |
-| 4.11.20210226 | 3.6.7 | 5.15.1 | 8.2.0 | 通过 | 通过，含 FA-only 配准 |
-| 5.2.2 | 3.9.10 | 5.15.2 | 9.1.0 | 通过 | 通过 |
-| 5.12.4 | 3.12.10 | 5.15.2 | 9.6.2 | 通过 | 通过，含 FA-only 配准 |
+| 4.11.20210226 | 3.6.7 | 5.15.1 | 8.2.0 | Passed | Passed, including FA-only registration |
+| 5.2.2 | 3.9.10 | 5.15.2 | 9.1.0 | Passed | Passed |
+| 5.12.4 | 3.12.10 | 5.15.2 | 9.6.2 | Passed | Passed, including FA-only registration |
 
-界面测试覆盖 Additional module paths 自动发现、Slicer 实际创建的模块界面、含空格路径、分块 QProcess 结果标记、取消后重启、RAS VTP 加载、ITK 变换求逆和零纤维结果。测试使用独立的设置命名空间，不覆盖用户保存的 DDTracking 输入路径。真实后端测试从界面计算 FA、配准、使用发布检查点追踪，并将非空纤维加载到场景。外部后端实测环境为 Python 3.9.19 / PyTorch 2.4.1；上文的新安装示例选用 Python 3.10。
+The UI test covers discovery through Additional module paths, creation of the actual Slicer module interface, paths containing spaces, chunked QProcess result markers, cancel-and-restart behavior, RAS VTP loading, ITK transform inversion, and empty fiber output. The test uses an isolated settings namespace and does not overwrite the user's saved DDTracking paths. The real-backend test computes FA and performs registration from the UI, tracks with the published checkpoint, and loads nonempty fibers into the Slicer scene. The tested external backend used Python 3.9.19 and PyTorch 2.4.1; the new-environment example above uses Python 3.10.
 
-CPU 合成数据全流程测试使用公开发布的检查点，自动计算 FA、完成刚性配准和追踪，并导出非空原生/MNI 纤维；测试验证纤维长度和两种空间的坐标一致性。可按以下命令重跑（`--model` 指向下载并解压后的发布检查点）：
+The CPU synthetic end-to-end test uses the published checkpoint, computes FA, performs rigid registration and tracking, exports nonempty native/MNI fibers, and checks fiber lengths and coordinates in both spaces. Rerun it with `--model` pointing to the downloaded checkpoint:
 
 ```bash
 python tests/synthetic_pipeline.py --model /path/to/weights.pt
 python -m unittest discover -s tests -v
 ```
 
-对目标 Slicer 运行下面的界面测试；请将两个仓库路径都替换为自己的绝对路径。Windows 使用 `Slicer.exe`；macOS 的可执行文件通常是 `/Applications/Slicer.app/Contents/MacOS/Slicer`。
+To run the UI test with a target Slicer build, replace both repository paths below with your absolute paths. On Windows, use `Slicer.exe`; on macOS, the executable is usually `/Applications/Slicer.app/Contents/MacOS/Slicer`.
 
 ```bash
 /path/to/Slicer --ignore-slicerrc --disable-settings --no-main-window --testing \
@@ -143,11 +143,9 @@ python -m unittest discover -s tests -v
   --python-script /absolute/path/to/DDTracking/tests/slicer_smoke.py
 ```
 
-测试需要能从启动 Slicer 时的 PATH 找到独立 Python，也可通过环境变量 `DDTRACKING_TEST_PYTHON` 指定其可执行文件；该轻量测试只运行标准库进程辅助脚本，不需要模型或后端依赖。测试打印 Slicer/Python/Qt/VTK 版本，成功输出 `DDTracking Slicer smoke test passed` 并返回退出码 0，失败返回非零。仅看到通过文字但进程异常退出不算完整通过。
+The test needs the standalone Python executable to be available on Slicer's startup `PATH`, or set `DDTRACKING_TEST_PYTHON` to its path. This lightweight test runs a standard-library helper process and does not need a model or backend dependencies. It prints the Slicer/Python/Qt/VTK versions, prints `DDTracking Slicer smoke test passed` on success, and exits with code 0; on failure it exits nonzero. A success message without a normal process exit does not count as a complete pass.
 
-源码安装已经验证；CMake 扩展构建文件已提供，尚未完成使用 Slicer SDK 的正式扩展打包或提交到 Extensions Index。如果自行构建二进制扩展包，需要使用对应 Slicer 版本的 SDK；跨版本使用请优先采用上述源码安装。
-
-在 Linux 无头环境且已安装 Xvfb 时，可运行：
+On a headless Linux system with Xvfb installed, run:
 
 ```bash
 xvfb-run -a /path/to/Slicer --ignore-slicerrc --disable-settings --no-main-window --testing \
@@ -155,10 +153,12 @@ xvfb-run -a /path/to/Slicer --ignore-slicerrc --disable-settings --no-main-windo
   --python-script /absolute/path/to/DDTracking/tests/slicer_smoke.py
 ```
 
-Windows/macOS 与其他 Slicer 版本可使用同一源码安装步骤，并运行本仓库的界面测试记录该平台/版本的验证结果。兼容目标不等于已逐一测试所有历史和未来版本。
+Source installation has been validated. CMake extension build files are provided, but formal packaging with the Slicer SDK and submission to the Extensions Index have not been completed. Building a binary extension package requires the matching Slicer SDK; use source installation to share the module across Slicer versions.
 
-CUDA、Windows 和 macOS 尚未测试；真实受试者数据上的配准/追踪等价性也尚未评估。
+Windows/macOS and other Slicer versions can use the same source-install procedure and run this repository's UI test to record the result for that platform/version. The compatibility target does not mean that every past or future version has been tested.
 
-## 许可与科研使用
+CUDA, Windows, and macOS have not been tested. Registration/tracking equivalence has not been evaluated on real-subject data.
 
-仓库目前没有许可证文件；公开发布不构成源码或模型权重的再分发授权。用于科研时请检查输出并引用主 README 中列出的 DDTracking 论文。
+## License and research use
+
+The repository currently has no license file; public availability does not grant permission to redistribute the source code or model weights. For research use, inspect the outputs and cite the DDTracking paper listed in the main README.

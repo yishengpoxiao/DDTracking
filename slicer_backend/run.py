@@ -1,7 +1,6 @@
 """External process entry point; no Slicer Python packages are required."""
 
 import argparse
-from datetime import datetime
 import importlib
 import json
 import logging
@@ -108,8 +107,7 @@ def run(args):
     params = None if args.preprocess_only else tracking_parameters(args)
     output = Path(args.output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
-    date = datetime.now().strftime("%Y-%m-%d")
-    directory = Path(tempfile.mkdtemp(prefix=f"DDTracking-{date}-", dir=output))
+    directory = Path(tempfile.mkdtemp(prefix="DDTracking-", dir=output))
     logger = logging.getLogger("DDTracking")
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -120,7 +118,7 @@ def run(args):
     logger.handlers[:] = [console, logfile]
     logger.propagate = False
     logger.info("Output directory: %s", directory)
-    with (directory / f"inputs-{date}.json").open("x", encoding="utf-8") as stream:
+    with (directory / "inputs.json").open("x", encoding="utf-8") as stream:
         json.dump(vars(args), stream, indent=2)
     try:
         # Fail on a mismatched checkpoint before spending time registering DWI.
@@ -139,7 +137,7 @@ def run(args):
             tracker.dwi_path = params["dwi_path"] = prepared["dwi"]
             tracker.brain_mask_path = params["brain_mask_dir"] = prepared["brain_mask"]
             tracker.wm_mask_path = params["wm_mask_dir"] = prepared["wm_mask"]
-            with (directory / f"tracking-{date}.yaml").open("x", encoding="utf-8") as stream:
+            with (directory / "tracking.yaml").open("x", encoding="utf-8") as stream:
                 yaml.safe_dump(params, stream, sort_keys=False)
             logger.info("Tracking in MNI space on %s", args.device)
             tracker.track()
