@@ -1,0 +1,11 @@
+# Focused dependencies for the external Slicer inference backend.
+# Install a CPU or CUDA PyTorch wheel separately for the target machine.
+numpy<2
+scipy>=1.9,<1.14
+nibabel>=5.2,<6
+dipy==1.9.0
+h5py>=3.10,<4
+PyYAML>=6,<7
+einops>=0.8,<1
+SimpleITK>=2.3,<3
+vtk>=9.3,<10

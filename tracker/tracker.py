@@ -7,7 +7,6 @@ from utils.utils import *
 from utils.dataset import TractographyData
 from model.ddtracking import DDTracking
 
-from dipy.tracking.streamline import length
 from dipy.io.utils import get_reference_info, create_tractogram_header
 
 
@@ -79,9 +78,8 @@ class Tracker:
         self.logger.debug("Loading model...")
         try:
             if not os.path.exists(self.model_file):
-                self.logger.error(f"Model file not found: {self.model_file}")
                 raise FileNotFoundError(f"Model file not found: {self.model_file}")
-            checkpoint = torch.load(self.model_file, map_location=self.device)
+            checkpoint = torch.load(self.model_file, map_location=self.device, weights_only=True)
 
             self.model = DDTracking(
                 input_size=self.grad_directions,
@@ -103,6 +101,23 @@ class Tracker:
             self.logger.debug("Model loaded successfully.")
         except Exception as e:
             self.logger.error(f"Failed to load the model with error: {str(e)}")
+            self.model = None
+            raise
+
+    @staticmethod
+    def _streamline_lengths_mm(streamlines, affine):
+        linear = np.asarray(affine, dtype=np.float64)[:3, :3]
+        return np.asarray([
+            np.linalg.norm(np.diff(points, axis=0) @ linear.T, axis=1).sum()
+            for points in streamlines
+        ])
+
+    @staticmethod
+    def _max_tracking_steps(max_length, step_size, affine):
+        if not np.isfinite(max_length):
+            raise ValueError("max_length must be finite to bound tracking")
+        min_voxel_size = np.linalg.svd(np.asarray(affine, dtype=np.float64)[:3, :3], compute_uv=False).min()
+        return max(0, int(np.floor(max_length / (step_size * min_voxel_size))))
 
     def get_seed_mask(self) -> None:
         """
@@ -131,6 +146,8 @@ class Tracker:
         prev_direction = np.zeros((batch_num_seeds, max(self.use_previous_dire, 1), 3), dtype=np.float32)
 
         while True:
+            if t_step >= self.max_step:
+                break
             with torch.no_grad():
                 model_input = prev_pts
                 
@@ -195,7 +212,7 @@ class Tracker:
             else:
                 hidden_state = hidden_state[:, streamlines_subset_active, :]
                 
-            if t_step > self.max_step:
+            if t_step >= self.max_step:
                 break
 
             t_step += 1
@@ -241,6 +258,8 @@ class Tracker:
     def _reverse_tracking(self, seed_voxel: np.ndarray, volume_tensor: torch.Tensor, boundry_mask: np.ndarray,
                            hidden_state: any, prev_direction: np.ndarray, seed_max_steps: np.ndarray) -> np.ndarray:
         batch_num_seeds = seed_voxel.shape[0]
+        if np.all(seed_max_steps <= 0):
+            return np.empty((batch_num_seeds, 0, 3), dtype=seed_voxel.dtype)
         streamline_vox_list = []
         t_step = 0
         
@@ -250,6 +269,9 @@ class Tracker:
         streamlines_active = ~streamlines_terminate
 
         while True:
+            capped = t_step >= seed_max_steps
+            if np.all(capped):
+                break
             with torch.no_grad():
                 model_input = prev_pts
                 
@@ -265,6 +287,7 @@ class Tracker:
                 
                 direction_pred, hidden_state = self.model.generate(volume_tensor, model_input_tensor, hidden_state)
                 direction_pred = F.normalize(direction_pred, p=2, dim=-1).cpu().numpy()
+                direction_pred[capped] = 0
 
             prev_pts += self.step_size * direction_pred
 
@@ -285,7 +308,7 @@ class Tracker:
             streamlines_subset = ~streamlines_terminate
             
             # curr_terminate = angle_mask | EoF_mask | ~inWM_mask | step_length_mask
-            curr_terminate = angle_mask | EoF_mask | ~inWM_mask
+            curr_terminate = angle_mask | EoF_mask | ~inWM_mask | capped
 
             streamlines_terminate[streamlines_active] |= curr_terminate
             streamlines_active = ~streamlines_terminate
@@ -314,9 +337,6 @@ class Tracker:
             else:
                 hidden_state = hidden_state[:, streamlines_subset_active, :]
                 
-            if t_step > self.max_step:
-                break
-
             t_step += 1
 
         streamline_vox = np.stack(streamline_vox_list, axis=1)
@@ -344,7 +364,8 @@ class Tracker:
 
             rev_hidden_state, rev_prev_direction = self._prepare_reverse_state(forward_streamline, volume_tensor)
 
-            seed_max_steps = np.ones((end_idx-start_idx,), dtype=int) * self.max_step - (~np.isnan(forward_streamline).any(axis=-1)).sum(axis=1)
+            forward_steps = np.maximum((~np.isnan(forward_streamline).any(axis=-1)).sum(axis=1) - 1, 0)
+            seed_max_steps = np.maximum(self.max_step - forward_steps, 0)
 
             revserse_streamline = self._reverse_tracking(seed_voxels, volume_tensor, boundry_mask, rev_hidden_state, rev_prev_direction, seed_max_steps)
 
@@ -355,9 +376,9 @@ class Tracker:
             flat_points = streamline_voxel.reshape(-1, 3)[valid_mask.flatten()]
             batch_streamlines = np.split(flat_points, np.cumsum(length_counts)[:-1])
             
-            lengths_vec = length(batch_streamlines)
-            mask = np.logical_and(lengths_vec >= self.min_step, lengths_vec <= self.max_step)
-            filtered_streamlines = np.array(batch_streamlines, dtype=object)[mask]
+            lengths_vec = self._streamline_lengths_mm(batch_streamlines, self.track_data.dwi.affine)
+            mask = (length_counts >= 2) & (lengths_vec >= self.min_length) & (lengths_vec <= self.max_length)
+            filtered_streamlines = [s for s, keep in zip(batch_streamlines, mask) if keep]
             
             all_streamlines.extend(filtered_streamlines)
             
@@ -368,10 +389,7 @@ class Tracker:
         
         self.get_seed_mask()
         self.seed_points = init_seeds_in_voxel(self.seed_mask, self.num_seeds)
-        self.voxel_size = np.mean(np.abs(self.track_data.dwi.affine)[np.diag_indices(4)][:3])
-        
-        self.max_step = self.max_length / self.voxel_size
-        self.min_step = self.min_length / self.voxel_size
+        self.max_step = self._max_tracking_steps(self.max_length, self.step_size, self.track_data.dwi.affine)
         
         out_streamlines = self.streamline_tracking()
         out_tractogram = streamlines.tractogram.Tractogram(streamlines=out_streamlines)

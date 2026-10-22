@@ -43,6 +43,14 @@ tar -xzvf weights.tar.gz
 
 ## Usage
 
+### 3D Slicer tracking module
+
+This repository also includes a 3D Slicer module for running DDTracking from a graphical interface. It launches an external Python backend so that Slicer and the model environment can use their own Python installations. See the [Slicer module guide](slicer/README.md) for installation, environment setup, inputs, defaults, and output details. The focused backend dependency list is [requirements-slicer-2026-10-22.txt](requirements-slicer-2026-10-22.txt); install a CPU or CUDA build of PyTorch separately as described there.
+
+The Slicer workflow estimates or accepts an FA image, rigidly registers it to the repository's MNI FA template, tracks in template space, and maps streamlines back to native DWI space. This registration implementation is not numerically identical to the original FSL and ANTs preprocessing workflow. Validate registration and tractography quality on the data and model you use; equivalence on real data has not been established here.
+
+---
+
 ### Preprocessing: Extract B Shell and Rigid Registration to MNI Space
 
 This step prepares your diffusion data for subsequent analysis.
