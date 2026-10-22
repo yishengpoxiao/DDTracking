@@ -38,6 +38,9 @@ def zero_mean_unit_variance_normalize(data, mask=None, per_channel=True, epsilon
         assert mask.shape == data.shape[:3], "Normalization mask resolution " \
                                              "does not fit data..."
 
+    if not np.any(mask):
+        raise ValueError("Normalization mask contains no voxels.")
+
     # Computing mean and std.
     # Also dealing with extreme cases where std=0. Shouldn't happen. It means
     # that this data is meaningless for your model. Here, we won't divide the
@@ -71,13 +74,12 @@ def zero_mean_unit_variance_normalize(data, mask=None, per_channel=True, epsilon
 
 
 def minmax_normalize(samples, mask):
+    out = np.array(samples, dtype=np.result_type(samples.dtype, np.float32), copy=True)
     if mask.ndim == 3:
-        mask = np.broadcast_to(mask[..., None], samples.shape)
+        mask = np.broadcast_to(mask[..., None], out.shape)
 
-    out = samples
-
-    sample_mins = np.broadcast_to(np.min(samples, -1)[..., None], samples.shape)
-    sample_maxes = np.broadcast_to(np.max(samples, -1)[..., None], samples.shape)
+    sample_mins = np.broadcast_to(np.min(out, -1)[..., None], out.shape)
+    sample_maxes = np.broadcast_to(np.max(out, -1)[..., None], out.shape)
     ranges = sample_maxes - sample_mins
 
     ranges = np.where(ranges < 1e-6, 1.0, ranges)
@@ -101,16 +103,28 @@ def calc_mean_dwi(dwi, mask):
 
 def locate_files(path, extension):
     if extension == 'dwi':
-        return glob.glob(os.path.join(path, 'dwi', '*.nii*'))[0]
+        directory, pattern = os.path.join(path, 'dwi'), '*.nii*'
     elif extension == 'tract':
-        if glob.glob(os.path.join(path, 'merged_tract', '*.trk')):
-            return glob.glob(os.path.join(path, 'merged_tract', '*.trk'))[0]
-        if glob.glob(os.path.join(path, 'merged_tract', '*.tck')):
-            return glob.glob(os.path.join(path, 'merged_tract', '*.tck'))[0]
+        directory = os.path.join(path, 'merged_tract')
+        matches = sorted(glob.glob(os.path.join(directory, '*.trk')))
+        if not matches:
+            matches = sorted(glob.glob(os.path.join(directory, '*.tck')))
     elif extension == 'brain-mask':
-        return glob.glob(os.path.join(path, 'mask', '*brain*.nii*'))[0]
+        directory, pattern = os.path.join(path, 'mask'), '*brain*.nii*'
     elif extension == 'wm-mask':
-        return glob.glob(os.path.join(path, 'mask', '*wm*.nii*'))[0]
+        directory, pattern = os.path.join(path, 'mask'), '*wm*.nii*'
+    else:
+        raise ValueError(f"Unknown subject file type: {extension}")
+
+    if extension != 'tract':
+        matches = sorted(glob.glob(os.path.join(directory, pattern)))
+    if not matches and extension == 'wm-mask':
+        return None
+    if not matches:
+        raise FileNotFoundError(f"No {extension} file found in {directory}.")
+    if len(matches) > 1:
+        raise ValueError(f"Multiple {extension} files found in {directory}: {matches}")
+    return matches[0]
 
 
 def mask_dwi(weights, mask):
@@ -290,6 +304,8 @@ OUTPUT: seed_points - zero-padded np array of size n x 3, holding n random point
         seed_points.extend(seeds_in_voxel)
 
     seed_points = np.array(seed_points, dtype=np.float32)
+    if seed_points.size == 0:
+        return np.empty((0, 3), dtype=np.float32)
     return seed_points
 
 
@@ -321,17 +337,22 @@ OUTPUT: out_mask - dilated mask using the specified SE
 
 def is_within_mask(positions, mask):
     """
-INPUT: positions - a Nx3 vector of brain positions
+INPUT: positions - a Nx3 vector of voxel-center coordinates
        mask - a 3D binary mask
 
-OUTPUT: is_inside - a Nx1 boolean vector specifying if p=positions[i,:] is inside the mask
+OUTPUT: is_inside - points are assigned to their nearest voxel center; coordinates
+                    within half a voxel of the image boundary are considered
 """
+    positions = np.asarray(positions)
     is_inside = np.zeros(positions.shape[0], dtype=bool)
-    
-    within_bounds = (positions >= 0).all(axis=-1) & (positions < np.array(mask.shape)).all(axis=-1)
-    valid_positions = positions[within_bounds]
-
-    is_inside[within_bounds] = mask[valid_positions[:, 0].astype(int), valid_positions[:, 1].astype(int), valid_positions[:, 2].astype(int)]
+    finite_positions = np.isfinite(positions).all(axis=-1)
+    voxel_indices = np.zeros(positions.shape, dtype=np.int64)
+    voxel_indices[finite_positions] = np.floor(positions[finite_positions] + 0.5).astype(np.int64)
+    within_bounds = (finite_positions
+                     & (voxel_indices >= 0).all(axis=-1)
+                     & (voxel_indices < np.asarray(mask.shape)).all(axis=-1))
+    valid_indices = voxel_indices[within_bounds]
+    is_inside[within_bounds] = mask[valid_indices[:, 0], valid_indices[:, 1], valid_indices[:, 2]]
 
     return is_inside
 
@@ -342,21 +363,25 @@ def interpolate_volume_in_neighborhood_torch(
     Params
     ------
     volume_as_tensor: torch.Tensor
-        The data: a 4D tensor with shape (D, H, W, F), where F is the number of features.
+        The data: a 5D tensor with shape (1, F, X, Y, Z), where F is the feature count.
     coords_vox_corner: torch.Tensor of shape (M, 3)
         A list of points (3D coordinates) in voxel space with origin at the corner.
-    max_edge: float
-        The maximum edge length for normalizing coordinates.
+    max_edge: array-like of shape (3,)
+        Maximum valid coordinates along X, Y and Z (dimension size minus one).
     neighborhood_vectors_vox: np.ndarray or torch.Tensor of shape (N, 3), optional
         The neighbor offsets to add to each coordinate. Should be in voxel space.
 
     Returns
     -------
-    interpolated_data: torch.Tensor of shape (M, F * N)
-        The interpolated data: M points with concatenated neighbor features.
+    interpolated_data: torch.Tensor of shape (M * N, F)
+        Samples are grouped by input point and retain neighborhood-vector order.
     """
 
     m_input_points = coords_vox_corner.shape[0]
+    neighborhood_vectors_vox = (None if neighborhood_vectors_vox is None else
+                                 torch.as_tensor(neighborhood_vectors_vox,
+                                                 dtype=coords_vox_corner.dtype,
+                                                 device=coords_vox_corner.device))
 
     if (neighborhood_vectors_vox is not None and
             len(neighborhood_vectors_vox) > 0):
@@ -372,16 +397,17 @@ def interpolate_volume_in_neighborhood_torch(
     else:  # No neighborhood:
         coords_vox_corner = coords_vox_corner
 
-    position_normalized = ((coords_vox_corner / max_edge) * 2.0 - 1.0).flip(-1)
+    max_edge = torch.as_tensor(max_edge, dtype=coords_vox_corner.dtype,
+                               device=coords_vox_corner.device)
+    position_normalized = torch.where(
+        max_edge > 0, coords_vox_corner / max_edge.clamp_min(1) * 2.0 - 1.0,
+        torch.zeros_like(coords_vox_corner)).flip(-1)
     position_normalized = position_normalized.unsqueeze(0).unsqueeze(0).unsqueeze(0)
 
     interpolated_data = F.grid_sample(
         volume_as_tensor, position_normalized, align_corners=True, mode='bilinear'
     )
-    # Reshape interpolated data to (M, F * N)
-    interpolated_data = interpolated_data.squeeze().permute(1, 0)
-
-    return interpolated_data
+    return interpolated_data[0, :, 0, 0, :].transpose(0, 1)
 
 
 def _fit_from_model_parallel(args):
@@ -433,15 +459,19 @@ def fit_from_model(model, data, mask=None, nbr_processes=None):
         MultiVoxelFit to get all fits at once.
     """
     data_shape = data.shape
+    mask_any = np.sum(data, axis=3).astype(bool)
     if mask is None:
-        mask = np.sum(data, axis=3).astype(bool)
+        mask = mask_any
     else:
-        mask_any = np.sum(data, axis=3).astype(bool)
-        mask *= mask_any
+        mask = np.asarray(mask, dtype=bool) & mask_any
+
+    if not np.any(mask):
+        raise ValueError("No nonzero voxels are available for model fitting.")
 
     nbr_processes = multiprocessing.cpu_count() \
         if nbr_processes is None or nbr_processes <= 0 \
         else nbr_processes
+    nbr_processes = min(nbr_processes, int(np.count_nonzero(mask)))
 
     # Ravel the first 3 dimensions while keeping the 4th intact, like a list of
     # 1D time series voxels. Then separate it in chunks of len(nbr_processes).

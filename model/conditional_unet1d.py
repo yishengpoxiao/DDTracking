@@ -226,15 +226,16 @@ class ConditionalUnet1D(nn.Module):
         """
 
         batch_size = sample.shape[0]
-        timesteps = timesteps.view(batch_size, 1)
+        timesteps = torch.as_tensor(timesteps, device=sample.device, dtype=sample.dtype)
+        timesteps = timesteps.reshape(-1, 1).expand(batch_size, 1)
         global_feature = torch.cat([
             timesteps, torch.sin(timesteps), torch.cos(timesteps)
         ], axis=-1) # (B, 3)
 
         # global_feature = self.diffusion_step_encoder(timesteps)
 
-        global_feature = torch.cat([
-            global_feature, global_cond], axis=-1)
+        if global_cond is not None:
+            global_feature = torch.cat([global_feature, global_cond], axis=-1)
 
         # encode local features
         h_local = list()

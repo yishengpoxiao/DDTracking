@@ -1,78 +1,74 @@
-import os, glob, shutil
+import os, shutil
+import sys
 import subprocess
 import argparse
-import re
 import numpy as np
-from nibabel.tmpdirs import InTemporaryDirectory
+import nibabel as nib
+import SimpleITK as sitk
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from slicer_backend.preprocessing import rotate_bvecs as rotate_bvecs_ras, transform_ras_matrix
 
 
 """
 ismrm dataset preprocessing, freesurfer is needed
 """
 
-def parse_fsl_affine(file):
-    with open(file) as f:
-        lines = f.readlines()
-    entries = [l.split() for l in lines]
-    entries = [row for row in entries if len(row) > 0]  # remove empty rows
-    return np.array(entries).astype(np.float32)
-
-
 def read_bvecs(this_fname):
-    """
-    Adapted from dipy.io.read_bvals_bvecs
-    """
-    with open(this_fname, 'r') as f:
-        content = f.read()
-    # We replace coma and tab delimiter by space
-    with InTemporaryDirectory():
-        tmp_fname = "tmp_bvals_bvecs.txt"
-        with open(tmp_fname, 'w') as f:
-            f.write(re.sub(r'(\t|,)', ' ', content))
-        return np.squeeze(np.loadtxt(tmp_fname)).T
+    """Read FSL 3xN or row-wise Nx3 b-vectors as an Nx3 array."""
+    values = np.loadtxt(this_fname, delimiter=None)
+    values = np.atleast_2d(values)
+    if values.shape[0] == 3:
+        values = values.T
+    if values.ndim != 2 or values.shape[1] != 3:
+        raise ValueError(f"b-vectors must be 3xN or Nx3: {this_fname}")
+    if not np.isfinite(values).all():
+        raise ValueError(f"b-vectors contain non-finite values: {this_fname}")
+    return values
 
 
-def rotate_bvecs(bvecs_in, affine_in, bvecs_out):
+def rotate_bvecs(bvecs_in, transform_path, native_image, template_image, bvecs_out):
+    """Reorient FSL b-vectors using the inverse of ANTs' fixed-to-moving transform."""
     bvecs = read_bvecs(bvecs_in)
-
-    affine = parse_fsl_affine(affine_in)
-
-    # Almost identical code to img_utils.apply_rotation_to_peaks except for order of peak array dims
-    affine = affine[:3, :3]
-
-    # Get rotation component of affine transformation
-    len = np.linalg.norm(affine, axis=0)
-    rotation = np.zeros((3,3))
-    rotation[:, 0] = affine[:, 0] / len[0]
-    rotation[:, 1] = affine[:, 1] / len[1]
-    rotation[:, 2] = affine[:, 2] / len[2]
-
-    # Apply rotation to bvecs
-    # check bvecs shape
-    if bvecs.shape[0] == 3:
-        bvecs = np.array(bvecs)
-    else:        
-        bvecs = np.array(bvecs).T  # change shape from [nr_vecs, 3] to [3, nr_vecs]
-    rotated_bvecs = np.matmul(rotation, bvecs)  # output shape [3, nr_vecs]
-    
-    # Normalize bvecs
-    rotated_bvecs = rotated_bvecs.copy()  # Avoid in-place modification.
-    bvecs_norm = np.linalg.norm(rotated_bvecs, axis=0)
-    idx = bvecs_norm != 0
-    rotated_bvecs[:, idx] /= bvecs_norm[idx]
-
-    np.savetxt(bvecs_out, rotated_bvecs, fmt='%1.6f')
+    native = nib.load(native_image)
+    template = nib.load(template_image)
+    fixed_to_moving_lps = sitk.ReadTransform(transform_path)
+    native_to_mni_ras = np.linalg.inv(transform_ras_matrix(fixed_to_moving_lps))
+    rotated = rotate_bvecs_ras(bvecs, native.affine, template.affine, native_to_mni_ras)
+    norms = np.linalg.norm(rotated, axis=1)
+    nonzero = norms > 0
+    rotated[nonzero] /= norms[nonzero, None]
+    np.savetxt(bvecs_out, rotated.T, fmt='%1.6f')
 
 
-def align_to_MNI(input_image, refer_MNI_FA, brain_mask_path, wm_mask_path):
+def align_to_MNI(input_image, refer_MNI_FA, brain_mask_path, wm_mask_path,
+                 bval_path=None, bvec_path=None):
     # calculate FA
     basic_dir = os.path.dirname(input_image)
     
     basic_name = os.path.basename(input_image).replace('.nii.gz', '').replace('.nii', '')
 
-    # 同时含有basic_name 和 bval的文件
-    bval_path = glob.glob(os.path.join(basic_dir, '*'+basic_name+'*bval*'))[0]
-    bvec_path = glob.glob(os.path.join(basic_dir, '*'+basic_name+'*bvec*'))[0]
+    def gradient_path(value, extension, label):
+        if value:
+            path = os.path.abspath(value)
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"{label} file does not exist: {path}")
+            return path
+        matches = [os.path.join(basic_dir, basic_name + suffix)
+                   for suffix in (f'.{extension}', f'.{extension}s')
+                   if os.path.isfile(os.path.join(basic_dir, basic_name + suffix))]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one matching {label} file for {input_image}, found {len(matches)}; pass it explicitly.")
+        return matches[0]
+
+    bval_path = gradient_path(bval_path, 'bval', 'b-values')
+    bvec_path = gradient_path(bvec_path, 'bvec', 'b-vectors')
+    if not os.path.isfile(input_image) or not os.path.isfile(refer_MNI_FA):
+        raise FileNotFoundError("Input DWI and MNI FA template must both exist.")
+    if not os.path.isfile(brain_mask_path):
+        raise FileNotFoundError(f"Brain mask does not exist: {brain_mask_path}")
+    if wm_mask_path and not os.path.isfile(wm_mask_path):
+        raise FileNotFoundError(f"WM mask does not exist: {wm_mask_path}")
     
     dti_dir = os.path.join(basic_dir, 'dti')
     os.makedirs(dti_dir, exist_ok=True)
@@ -101,7 +97,9 @@ def align_to_MNI(input_image, refer_MNI_FA, brain_mask_path, wm_mask_path):
     
     shutil.copy(bval_path, os.path.join(transform_dir, 'Diffusion_MNI_dwi.bvals'))
     
-    rotate_bvecs(bvec_path, os.path.join(transform_dir, 'FA_2_MNI.mat'), os.path.join(transform_dir, 'Diffusion_MNI_dwi.bvecs'))
+    rotate_bvecs(bvec_path, os.path.join(transform_dir, 'FA_2_MNI.tfm'),
+                 input_image, refer_MNI_FA,
+                 os.path.join(transform_dir, 'Diffusion_MNI_dwi.bvecs'))
     
     command = ['antsApplyTransforms', '-d', '3', '-i', brain_mask_path, '-r', refer_MNI_FA, '-o', os.path.join(transform_dir, 'brain_mask_MNI.nii.gz'), '-t', os.path.join(transform_dir, 'FA_2_MNI0GenericAffine.mat'), '-n', 'NearestNeighbor']
     subprocess.check_call(command)
@@ -113,10 +111,12 @@ def align_to_MNI(input_image, refer_MNI_FA, brain_mask_path, wm_mask_path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Preprocess the input image for tracking')
-    parser.add_argument('-input_image', type=str, help='Input image path')
-    parser.add_argument('-brain_mask', type=str, help='Brain mask path')
-    parser.add_argument('-template', type=str, help='Template path')
+    parser.add_argument('-input_image', type=str, help='Input image path', required=True)
+    parser.add_argument('-brain_mask', type=str, help='Brain mask path', required=True)
+    parser.add_argument('-template', type=str, help='Template path', required=True)
     parser.add_argument('-wm_mask', type=str, help='White matter mask path', required=False)
+    parser.add_argument('-bvals', type=str, help='Explicit b-values file (otherwise match the DWI filename)')
+    parser.add_argument('-bvecs', type=str, help='Explicit b-vectors file (otherwise match the DWI filename)')
     args = parser.parse_args()
     
-    align_to_MNI(args.input_image, args.template, args.brain_mask, args.wm_mask)
+    align_to_MNI(args.input_image, args.template, args.brain_mask, args.wm_mask, args.bvals, args.bvecs)

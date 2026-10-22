@@ -1,45 +1,41 @@
-import yaml
+"""Train DDTracking or track fibers using an explicit YAML configuration."""
 
-from trainer.trainer import Trainer
-from tracker.tracker import Tracker
 import argparse
-import os
 import logging
 
-if __name__ == '__main__':
+import yaml
 
-    # Arguments parsing
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', dest='config', required=False, help='Path to .json configuration file')
-    parser.add_argument('--train', action="store_true", required=False, help='Whether to start training phase')
-    parser.add_argument('--track', action="store_true", required=False, help='Whether to start inference phase')
-    args = parser.parse_args()
 
-    # Logging control
-    if args.config is not None:
-        log_path = args.config + '.log'
-    else:
-        abspath = os.path.abspath(__file__)
-        dname = os.path.dirname(abspath)
-        log_path = os.path.join(dname, '.log')
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', required=True, help='Path to a YAML configuration file')
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--train', action='store_true', help='Train a model')
+    mode.add_argument('--track', action='store_true', help='Track using a trained model')
+    args = parser.parse_args(argv)
 
-    logging.basicConfig(filename=log_path, filemode='a', format='%(asctime)s %(message)s')
-    logger = logging.getLogger(__name__)
+    with open(args.config, encoding='utf-8') as stream:
+        params = yaml.safe_load(stream)
+    if not isinstance(params, dict):
+        parser.error('The configuration must be a YAML mapping')
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s',
+                        handlers=[logging.FileHandler(args.config + '.log'), logging.StreamHandler()])
+    logger = logging.getLogger('DDTracking')
     logger.setLevel(logging.DEBUG)
-    console = logging.StreamHandler()
-    console.setLevel(logging.DEBUG)
-    logger.addHandler(console)
-
-    # Get parameter file from arguments or from default source
-    with open(args.config, 'r') as f:
-        params = yaml.load(f.read(), Loader=yaml.FullLoader)
-
-    # Train model
     if args.train:
-        trainer = Trainer(logger=logger, params=params)
-        train_performance = trainer.train()
+        from trainer.trainer import Trainer
 
-    # Run tractography using a trained model
-    if args.track:
-        tracker = Tracker(logger=logger, params=params)
-        tractogram = tracker.track()
+        trainer = Trainer(logger=logger, params=params)
+        try:
+            return trainer.train()
+        finally:
+            trainer.destroy_ddp()
+    else:
+        from tracker.tracker import Tracker
+
+        return Tracker(logger=logger, params=params).track()
+
+
+if __name__ == '__main__':
+    main()

@@ -54,6 +54,7 @@ class TrackerTests(unittest.TestCase):
         tracker = Tracker.__new__(Tracker)
         tracker.track_data = SimpleNamespace(
             wm_mask=None,
+            brain_mask=np.ones((3, 3, 3), dtype=bool),
             FA=np.ones((3, 3, 3)),
             volume=np.zeros((3, 3, 3, 1), dtype=np.float32),
             dwi=SimpleNamespace(affine=np.eye(4)),
@@ -64,6 +65,32 @@ class TrackerTests(unittest.TestCase):
         tracker.logger = logging.getLogger("tracker-empty-batch-test")
 
         self.assertEqual(len(tracker.streamline_tracking()), 0)
+
+    def test_reverse_warmup_preserves_all_previous_directions(self):
+        tracker = Tracker.__new__(Tracker)
+        tracker.use_previous_dire = 3
+        tracker.device = 'cpu'
+        tracker.model = SimpleNamespace(_apply_rnn_layers=lambda volume, points, state:
+                                        (None, torch.ones((1, points.shape[0], 2))))
+        reversed_path = np.array([[[0., 0., 0.], [1., 0., 0.],
+                                  [1., 1., 0.], [1., 1., 1.]]], dtype=np.float32)
+        _, history = tracker._prepare_reverse_state(reversed_path, torch.empty(0))
+        np.testing.assert_allclose(history[0], [[0., 0., 1.], [0., 1., 0.], [1., 0., 0.]], atol=2e-6)
+
+    def test_reverse_rejects_sharp_turn_at_seed(self):
+        tracker = Tracker.__new__(Tracker)
+        tracker.use_previous_dire = 1
+        tracker.device = 'cpu'
+        tracker.look_ahead = False
+        tracker.step_size = .5
+        tracker.max_angle = 45
+        tracker.logger = logging.getLogger('reverse-angle-test')
+        tracker.model = SimpleNamespace(generate=lambda volume, points, state:
+                                        (torch.tensor([[-1., 0., 0.]]), torch.ones((1, 1, 2))))
+        result = tracker._reverse_tracking(np.array([[2., 2., 2.]], dtype=np.float32),
+                                          torch.empty(0), np.ones((5, 5, 5), dtype=bool),
+                                          None, np.array([[[1., 0., 0.]]]), np.array([2]))
+        self.assertTrue(np.isnan(result).all())
 
 
 if __name__ == "__main__":

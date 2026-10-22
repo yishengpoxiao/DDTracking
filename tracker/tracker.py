@@ -26,11 +26,6 @@ class Tracker:
         else:
             self.logger = logger
 
-        # if self.params['tractography_type'] not in ['deterministic', 'probabilistic']:
-        #     raise ValueError(f"Invalid tractography type: {self.params['tractography_type']}, "
-        #                      "type must be either 'deterministic' or 'probabilistic'")
-        # self.tractography_type = self.params['tractography_type']
-
         self.dwi_path = self.params['dwi_path']
         self.wm_mask_path = self.params.get('wm_mask_dir', None)
         self.brain_mask_path = self.params['brain_mask_dir']
@@ -42,21 +37,23 @@ class Tracker:
         self.out_tractogram_path = join(self.out_dir, self.out_name)
 
         self.seed_mask = None
-        self.num_seeds = self.params.get('num_seeds', 1)
+        self.num_seeds = int(self.params.get('num_seeds', 1))
         self.seed_points = None
         self.track_length = None
-        self.max_angle = self.params['max_angle']
-        self.step_size = self.params['step_size']
-        self.min_length = self.params.get('min_length', 0)
-        self.max_length = self.params.get('max_length', float('inf'))
-        self.track_batch_size = self.params['track_batch_size']
-        
-        if 'model_file' not in self.params:
-            self.trained_model_dir = self.params['trained_model_dir']
-            self.model_name = self.params['model_name']
-            self.model_file = join(self.trained_model_dir, self.model_name + '_best.pt')
-        else:
-            self.model_file = self.params['model_file']
+        self.max_angle = float(self.params['max_angle'])
+        self.step_size = float(self.params['step_size'])
+        self.min_length = float(self.params.get('min_length', 0))
+        self.max_length = float(self.params.get('max_length', 200))
+        self.track_batch_size = int(self.params['track_batch_size'])
+        if not np.isfinite([self.max_angle, self.step_size, self.min_length, self.max_length]).all():
+            raise ValueError("Tracking angle, step size and lengths must be finite")
+        if self.num_seeds < 1 or self.track_batch_size < 1 or self.step_size <= 0:
+            raise ValueError("Seeds, batch size and step size must be positive")
+        if not 0 < self.max_angle <= 180 or not 0 <= self.min_length < self.max_length:
+            raise ValueError("Require 0 < max_angle <= 180 and 0 <= min_length < max_length")
+        if streamlines.detect_format(self.out_tractogram_path) is None:
+            raise ValueError("Output tractogram must use the .trk or .tck extension")
+        self.model_file = self.params['model_file']
 
         self.num_layers = int(self.params['num_layers'])
         self.num_cells = int(self.params['num_cells'])
@@ -68,10 +65,17 @@ class Tracker:
         self.use_previous_dire = int(self.params['use_previous_dire'])
         self.look_ahead = bool(self.params['look_ahead'])
         self.input_type = self.params['input_type'] 
-        self.grad_directions = int((self.sh_order + 1) * (self.sh_order + 2) / 2) if self.input_type in ['sh', 'fodf'] else 100
+        self.grad_directions = ((self.sh_order + 1) * (self.sh_order + 2) // 2
+                                if self.input_type in ['sh', 'fodf'] else
+                                self.sh_order // 2 + 1 if self.input_type == 'rish' else 100)
 
         self.model = None
-        self.device = self.params['device'] if torch.cuda.is_available() else 'cpu'
+        self.device = torch.device(self.params['device'])
+        if self.device.type not in ('cpu', 'cuda'):
+            raise ValueError("Tracking device must be cpu or cuda:<index>")
+        if self.device.type == 'cuda' and (not torch.cuda.is_available() or
+                (self.device.index or 0) >= torch.cuda.device_count()):
+            raise ValueError(f"Requested device {self.device} is unavailable; choose cpu or an available GPU")
         self.load_model()
 
     def load_model(self):
@@ -94,8 +98,6 @@ class Tracker:
                 vox_step=self.step_size,
             ).to(self.device)
 
-            self.model.offset = self.model.offset.to(self.device)
- 
             self.model.load_state_dict(checkpoint['state_dict'])
             self.model.eval()  # Set the model to evaluation mode
             self.logger.debug("Model loaded successfully.")
@@ -137,8 +139,6 @@ class Tracker:
         streamlines_terminate = np.zeros((batch_num_seeds,), dtype=bool)
         streamlines_active = ~streamlines_terminate
         
-        seed_max_steps = np.ones((batch_num_seeds,), dtype=int) * self.max_step
-
         hidden_state = None
         t_step = 0
         
@@ -166,10 +166,8 @@ class Tracker:
 
             prev_pts += self.step_size * direction_pred
 
-            if t_step > 0:
-                angle_mask = calculate_high_curv(prev_direction[:, 0, :], direction_pred, self.max_angle)
-            else:
-                angle_mask = np.zeros((prev_pts.shape[0]), dtype=bool)
+            angle_mask = (calculate_high_curv(prev_direction[:, 0, :], direction_pred, self.max_angle)
+                          & np.any(prev_direction[:, 0, :] != 0, axis=-1))
 
             if self.use_previous_dire > 1:
                 prev_direction[:, 1:, :] = prev_direction[:, :-1, :]
@@ -178,11 +176,8 @@ class Tracker:
             EoF_mask = np.all(direction_pred == 0, axis=-1)
             inWM_mask = is_within_mask(prev_pts, boundry_mask).astype(bool)
             
-            # step_length_mask = t_step >= (seed_max_steps - 1)
-            
             streamlines_subset = ~streamlines_terminate
             
-            # curr_terminate = angle_mask | EoF_mask | ~inWM_mask | step_length_mask
             curr_terminate = angle_mask | EoF_mask | ~inWM_mask
 
             streamlines_terminate[streamlines_active] |= curr_terminate
@@ -201,7 +196,6 @@ class Tracker:
                 break
 
             prev_pts = prev_pts[streamlines_subset_active, :]
-            seed_max_steps = seed_max_steps[streamlines_subset_active]
             prev_direction = prev_direction[streamlines_subset_active, ...]
 
             if isinstance(hidden_state, tuple):
@@ -212,9 +206,6 @@ class Tracker:
             else:
                 hidden_state = hidden_state[:, streamlines_subset_active, :]
                 
-            if t_step >= self.max_step:
-                break
-
             t_step += 1
 
         streamline_vox = np.stack(streamline_vox_list, axis=1)
@@ -248,6 +239,8 @@ class Tracker:
                     hidden_state[:, is_nan, :] = 0.0
 
                 active_indices = np.where(~is_nan)[0]
+                if self.use_previous_dire > 1:
+                    prev_direction[active_indices, 1:, :] = prev_direction[active_indices, :-1, :]
                 
                 diff = streamline_vox[active_indices, t_idx+1, :] - pts_current[active_indices]
                 norms = np.linalg.norm(diff, axis=-1, keepdims=True)
@@ -291,10 +284,8 @@ class Tracker:
 
             prev_pts += self.step_size * direction_pred
 
-            if t_step > 0:
-                angle_mask = calculate_high_curv(prev_direction[:, 0, :], direction_pred, self.max_angle)
-            else:
-                angle_mask = np.zeros((prev_pts.shape[0]), dtype=bool)
+            angle_mask = (calculate_high_curv(prev_direction[:, 0, :], direction_pred, self.max_angle)
+                          & np.any(prev_direction[:, 0, :] != 0, axis=-1))
 
             if self.use_previous_dire > 1:
                 prev_direction[:, 1:, :] = prev_direction[:, :-1, :]
@@ -303,11 +294,8 @@ class Tracker:
             EoF_mask = np.all(direction_pred == 0, axis=-1)
             inWM_mask = is_within_mask(prev_pts, boundry_mask).astype(bool)
             
-            # step_length_mask = t_step >= (seed_max_steps)
-            
             streamlines_subset = ~streamlines_terminate
             
-            # curr_terminate = angle_mask | EoF_mask | ~inWM_mask | step_length_mask
             curr_terminate = angle_mask | EoF_mask | ~inWM_mask | capped
 
             streamlines_terminate[streamlines_active] |= curr_terminate
@@ -347,7 +335,7 @@ class Tracker:
         all_streamlines = streamlines.array_sequence.ArraySequence([])
 
         boundry_mask = self.track_data.wm_mask if (self.track_data.wm_mask is not None and self.track_data.wm_mask.size > 0) else (self.track_data.FA > 0.15)
-        boundry_mask = mask_dilate(boundry_mask)
+        boundry_mask = mask_dilate(boundry_mask) & self.track_data.brain_mask
 
         volume_tensor = torch.as_tensor(self.track_data.volume, dtype=torch.float32, device=self.device).unsqueeze(0)
 

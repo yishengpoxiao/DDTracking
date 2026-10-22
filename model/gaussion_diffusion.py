@@ -97,7 +97,7 @@ class D2MP_OB(nn.Module):
 
     def forward(self, x_0, global_feat, local_feat=None, mask=None, t=None):
         batch_size, point_dim = x_0.size()
-        if t == None:
+        if t is None:
             t = torch.rand(x_0.shape[0], device=x_0.device) * (1. - self.eps) + self.eps # (B,)
 
         beta = t.log() / 4
@@ -111,44 +111,21 @@ class D2MP_OB(nn.Module):
         noise_pred = (x_noisy - (t - 1) * C_pred) / t.sqrt()
 
         if self.loss_type == 'l1':
-            if mask is not None:
-                loss_C = F.smooth_l1_loss(C_pred.view(-1, point_dim), C.view(-1, point_dim), reduction='none') * mask
-                loss_noise = F.smooth_l1_loss(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='none') * mask
-            else:
-                loss_C = F.smooth_l1_loss(C_pred.view(-1, point_dim), C.view(-1, point_dim), reduction='none')
-                loss_noise = F.smooth_l1_loss(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='none')
-
+            loss_C = F.smooth_l1_loss(C_pred, C, reduction='none')
+            loss_noise = F.smooth_l1_loss(noise_pred, e_rand, reduction='none')
         elif self.loss_type == 'l2':
-            if mask is not None:
-                loss_C = F.mse_loss(C_pred.view(-1, point_dim), C.view(-1, point_dim), reduction='none') * mask
-                loss_noise = F.mse_loss(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='none') * mask
-            else:
-                loss_C = F.mse_loss(C_pred.view(-1, point_dim), C.view(-1, point_dim), reduction='none')
-                loss_noise = F.mse_loss(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='none')
-        elif self.loss_type == 'cosine':
-            if mask is not None:
-                loss_C = 1 - torch.clamp(F.cosine_similarity(C_pred.view(-1, point_dim), C.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1) * mask
-                loss_noise = 1 - torch.clamp(F.cosine_similarity(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1) * mask
-            else:
-                loss_C = 1 - torch.clamp(F.cosine_similarity(C_pred.view(-1, point_dim), C.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1)
-                loss_noise = 1 - torch.clamp(F.cosine_similarity(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1)
-        elif self.loss_type == 'w_cosine':
-            if mask is not None:
-                loss_C1 = F.smooth_l1_loss(C_pred.view(-1, point_dim), C.view(-1, point_dim), reduction='none') * mask
-                loss_noise1 = F.smooth_l1_loss(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='none') * mask
-                
-                loss_C2 = (1 - torch.clamp(F.cosine_similarity(C_pred.view(-1, point_dim), C.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1) * mask) ** 2
-                loss_noise2 = (1 - torch.clamp(F.cosine_similarity(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1) * mask) ** 2
-            else:
-                loss_C1 = F.smooth_l1_loss(C_pred.view(-1, point_dim), C.view(-1, point_dim), reduction='none')
-                loss_noise1 = F.smooth_l1_loss(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='none')
-                
-                loss_C2 = (1 - torch.clamp(F.cosine_similarity(C_pred.view(-1, point_dim), C.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1)) ** 2
-                loss_noise2 = (1 - torch.clamp(F.cosine_similarity(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), dim=-1, eps=self.eps), -1, 1).unsqueeze(1)) ** 2
-                
-            loss_C = loss_C1 / (self.eps + loss_C1.detach()) + loss_C2 / (self.eps + loss_C2.detach())
-            loss_noise = loss_noise1 / (self.eps + loss_noise1.detach()) + loss_noise2 / (self.eps + loss_noise2.detach())
-            
+            loss_C = F.mse_loss(C_pred, C, reduction='none')
+            loss_noise = F.mse_loss(noise_pred, e_rand, reduction='none')
+        else:
+            loss_C = 1 - F.cosine_similarity(C_pred, C, dim=-1, eps=self.eps).clamp(-1, 1).unsqueeze(1)
+            loss_noise = 1 - F.cosine_similarity(noise_pred, e_rand, dim=-1, eps=self.eps).clamp(-1, 1).unsqueeze(1)
+            if self.loss_type == 'w_cosine':
+                loss_C1 = F.smooth_l1_loss(C_pred, C, reduction='none')
+                loss_noise1 = F.smooth_l1_loss(noise_pred, e_rand, reduction='none')
+                loss_C2, loss_noise2 = loss_C.square(), loss_noise.square()
+                loss_C = loss_C1 / (self.eps + loss_C1.detach()) + loss_C2 / (self.eps + loss_C2.detach())
+                loss_noise = loss_noise1 / (self.eps + loss_noise1.detach()) + loss_noise2 / (self.eps + loss_noise2.detach())
+
         if not self.weight:
             loss = 0.5 * loss_C + 0.5 * loss_noise
         else:
@@ -160,14 +137,13 @@ class D2MP_OB(nn.Module):
 
             loss = simple_weight1 * loss_C + simple_weight2 * loss_noise
             
-        if mask is not None:
-            loss = loss.sum() / mask.sum()
-        else:
-            loss = loss.mean()
-
-            # loss = F.smooth_l1_loss(noise_pred.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='mean')
-
-        return loss
+        if mask is None:
+            return loss.mean()
+        weights = torch.as_tensor(mask, device=loss.device, dtype=loss.dtype)
+        if weights.ndim == 1:
+            weights = weights[:, None]
+        weights = weights.expand_as(loss)
+        return (loss * weights).sum() / weights.sum().clamp_min(torch.finfo(loss.dtype).eps)
 
     def sample(self, global_feat, bestof, point_dim=3, ret_traj=False, local_feat=None):
         # context = context.to(self.var_sched.betas.device)
@@ -177,12 +153,12 @@ class D2MP_OB(nn.Module):
         else:
             x_T = torch.zeros([batch_size, point_dim]).to(global_feat.device)
 
-        self.var_sched.num_steps = 1
-        traj = {self.var_sched.num_steps: x_T}
+        num_steps = 1
+        traj = {num_steps: x_T}
 
         cur_time = torch.ones((batch_size,), device=x_T.device)
-        step = 1. / self.var_sched.num_steps
-        for t in range(self.var_sched.num_steps, 0, -1):
+        step = 1. / num_steps
+        for t in range(num_steps, 0, -1):
             s = torch.full((batch_size,), step, device=x_T.device)
             if t == 1:
                 s = cur_time
@@ -203,4 +179,4 @@ class D2MP_OB(nn.Module):
             if not ret_traj:
                 del traj[t]
 
-        return traj[0]
+        return traj if ret_traj else traj[0]

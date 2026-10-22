@@ -23,9 +23,16 @@ source ~/miniconda3/bin/activate
 ### 2. Create and Activate Conda Environment
 
 ```
-conda env create -f requirements.yaml
+conda env create -f requirements-2026-10-22.yaml
 conda activate DDTracking
 ```
+
+Install PyTorch 2.4 or newer for your CPU/CUDA platform using the
+[official installation instructions](https://pytorch.org/get-started/locally/).
+The fixes below were tested with PyTorch 2.4.1. PyTorch is installed separately
+so the environment does not mix incompatible CUDA and CPU packages. The original
+`requirements.yaml` is preserved; the dated environment replaces its machine-specific
+package dump and invalid pip `pytorch` entry.
 
 ---
 
@@ -68,7 +75,7 @@ This step prepares your diffusion data for subsequent analysis.
 
    **Example command:**
    ```
-   python register_volume_to_MNI.py \
+   python utilize/register_volume_to_MNI.py \
        -input_image <dwi_path> \
        -brain_mask <brain_mask_path> \
        -template <MNI_FA_template_path> \
@@ -80,10 +87,15 @@ This step prepares your diffusion data for subsequent analysis.
 To perform tractography using a pre-trained model:
 
 ```
-python tractography.py --config track_config.yaml --track
+python tractography.py --config example_tracking_config-2026-10-22.yaml --track
 ```
 
-Before running, make sure to modify `track_config.yaml` to match your input paths and desired parameters.
+Copy the dated configuration to a new local file and set its input paths before
+running. DWI gradients must have exactly the same filename stem, with `.bval`/`.bvals`
+and `.bvec`/`.bvecs` extensions. Masks must match the DWI shape and affine. The
+original command expects preprocessed, single-shell MNI data; use the Slicer
+backend for automatic shell selection and FA registration. Requesting an unavailable
+CUDA device now raises an error; choose `cpu` explicitly for CPU tracking.
 
 ---
 
@@ -110,10 +122,47 @@ dataset/
 Then run distributed training:
 
 ```
-CUDA_VISIBLE_DEVICES=0,1,... torchrun --nproc_per_node=<NUM_GPUS> tractography.py --config train_config.yaml --train
+CUDA_VISIBLE_DEVICES=0,1,... torchrun --nproc_per_node=<NUM_GPUS> tractography.py --config example_training_config-2026-10-22.yaml --train
 ```
 
-Replace `<NUM_GPUS>` with the number of available GPUs.
+Replace `<NUM_GPUS>` with the number of available GPUs and use a local copy of the
+dated training template with your dataset paths. For a single process, run
+`python tractography.py --config <your-training-config.yaml> --train`.
+`num_workers: 0` is supported for small datasets or CPU debugging.
+
+Training resumes from the latest `<model_name>.pt`, restoring optimizer, scheduler,
+mixed-precision scaler, best validation loss and early-stopping state. Resume
+requires the current checkpoint format, including `gradscaler`, `best_val_loss`
+and `bad_epochs`; earlier training checkpoints are not accepted for resume.
+The published inference weights still load without changing their network tensors.
+
+Dataset directories now cache each feature/SH-order/step-size combination separately,
+for example `trainset_sh_sh6_step0.5_dataset.h5` with its matching `.npz` file.
+An existing HDF5 dataset must be selected by its explicit file path when no matching
+cache or subject directories are available. Regenerate older training caches to use
+the corrected endpoint-inclusive streamline resampling: a 3 mm line at 1 mm spacing
+now has four points. Splitting a dataset no longer removes arrays from the source,
+and numeric HDF5 volume ordering preserves the correct subject mapping beyond ten
+subjects.
+
+## Regression checks
+
+```bash
+python -m unittest discover -s tests -v
+python tests/synthetic_training.py
+python tests/distributed_validation.py
+python tests/synthetic_pipeline.py --model weights/DDTracking.pt
+```
+
+These exercise data pairing and geometry, normalization and interpolation, masked
+losses, reverse tracking, registration transforms, distributed sampling, checkpoint
+resume, actual-network CPU training, two-process CPU/Gloo validation and early
+stopping, and tracking with the published model. CUDA multi-GPU training and the
+legacy FSL/ANTs command-line registration were not run in this validation; the
+Slicer backend's SimpleITK registration was exercised end to end.
+The voxel-center mask and reverse-turn corrections can change tracked fibers;
+the resampling and loss corrections can change newly trained models. Validate
+these changes on your own data before comparing scientific results.
 
 ## Acknowledgments
 

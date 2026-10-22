@@ -1,0 +1,26 @@
+# Replace the example input paths with your own files.
+# Original configuration is preserved; this template fixes defaults for current code.
+num_layers: 2
+num_cells: 512
+cell_type: GRU
+dropout_prob: 0.5
+loss_type: l1
+learning_rate: 0.0001
+batch_size: 64
+epochs: 100
+decay_LR_patience: 20
+decay_factor: 0.1
+early_stopping_patience: 50
+eta_min: 1e-7
+model_weights_save_dir: ./checkpoints
+model_name: DDTracking
+trainset_path: /path/to/trainset
+validset_path: /path/to/validset
+sh_order: 6
+use_previous_dire: 0
+input_type: sh
+flip_streamline: false
+look_ahead: true
+vox_step: 0.5
+resume: false
+num_workers: 0

@@ -22,13 +22,27 @@ def merge_trks(trk_dir, keep=1.0, num_keep=None, weighted=False, out_dir=None):
         out_dir (str): Output directory for the merged .trk file. Uses trk_dir if None.
 
     Notes:
-        Alignment between trk files is not checked but assumed to be the same.
+        .trk reference grids must match. .tck streamlines are interpreted in
+        world coordinates and need at least one .trk to define output geometry.
     """
+    if not os.path.isdir(trk_dir):
+        raise FileNotFoundError(f"Tractogram directory does not exist: {trk_dir}")
+    if not 0 < keep <= 1:
+        raise ValueError("keep must be greater than zero and at most one.")
+    if num_keep is not None and (isinstance(num_keep, (bool, np.bool_))
+                                 or not isinstance(num_keep, (int, np.integer)) or num_keep <= 0):
+        raise ValueError("num_keep must be a positive integer.")
+    if out_dir is None:
+        out_dir = os.path.join(os.path.dirname(trk_dir), "merged_tracts")
+    prefix = os.path.basename(os.path.normpath(trk_dir)).split('_')[0]
+    save_path = os.path.abspath(os.path.join(
+        out_dir, f"{prefix}_whole_tract{'_weighted' if weighted else ''}.trk"))
+
     bundles = []
-    first_file = True
+    header = None
     
     all_tract = glob.glob(os.path.join(trk_dir, "*.trk")) + glob.glob(os.path.join(trk_dir, "*.tck"))
-    all_tract = sorted(all_tract)
+    all_tract = sorted(path for path in all_tract if os.path.abspath(path) != save_path)
 
     for bundle_idx, trk_path in enumerate(all_tract):
         print(f"Loading {os.path.basename(trk_path):.<20}", end="\r")
@@ -36,16 +50,18 @@ def merge_trks(trk_dir, keep=1.0, num_keep=None, weighted=False, out_dir=None):
         if len(trk_file.tractogram.streamlines) == 0:
             continue
 
+        if trk_path.lower().endswith('.trk'):
+            if header is None:
+                header = trk_file.header
+            elif (not np.array_equal(header['dimensions'], trk_file.header['dimensions'])
+                  or not np.allclose(header['voxel_to_rasmm'], trk_file.header['voxel_to_rasmm'], atol=1e-4)):
+                raise ValueError(f"Tractogram reference geometry differs: {trk_path}")
         bundles.append(trk_file.tractogram)
 
-        if first_file:
-            prefix = os.path.basename(trk_dir).split('_')[0]
-            header = trk_file.header
-            first_file = False
-
     if not bundles:
-        print("No .trk files found in the directory.")
-        return
+        raise ValueError("No nonempty .trk or .tck files found in the directory.")
+    if header is None:
+        raise ValueError("At least one nonempty .trk file is required to define output reference geometry.")
 
     n_fibers = sum([len(b.streamlines) for b in bundles])
     n_bundles = len(bundles)
@@ -74,8 +90,8 @@ def merge_trks(trk_dir, keep=1.0, num_keep=None, weighted=False, out_dir=None):
             keep_n = int(keep * n_fibers)
         print(f"Subsampling {keep_n} fibers.")
 
-        np.random.seed(42)
-        subsample_indice = np.random.choice(
+        rng = np.random.default_rng(42)
+        subsample_indice = rng.choice(
             n_fibers,
             size=keep_n,
             replace=False,
@@ -90,15 +106,13 @@ def merge_trks(trk_dir, keep=1.0, num_keep=None, weighted=False, out_dir=None):
     else:
         tractogram = merged_bundles
 
-    if out_dir is None:
-        out_dir = os.path.join(os.path.dirname(trk_dir), "merged_tracts")
     os.makedirs(out_dir, exist_ok=True)
 
     # Saving the merged tractogram
-    save_path = os.path.join(out_dir, f"{prefix}_whole_tract{'_weighted' if weighted else ''}.trk")
     print(f"Saving {save_path}")
 
     TrkFile(tractogram, header).save(save_path)
+    return save_path
 
 
 if __name__ == '__main__':
@@ -116,6 +130,4 @@ if __name__ == '__main__':
     parser.add_argument("--out_dir", help="Directory for saving the merged .trk file.", type=str, default=None)
 
     args = parser.parse_args()
-    assert args.keep >= 0.001, "The keep parameter should be >= 0.001."
-
     merge_trks(trk_dir=args.trk_dir, keep=args.keep, num_keep=args.num_keep, weighted=args.weighted, out_dir=args.out_dir)

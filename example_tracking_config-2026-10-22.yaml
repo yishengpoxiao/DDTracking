@@ -1,0 +1,24 @@
+# Replace the example input paths with your own files.
+# Original configuration is preserved; this template fixes defaults for current code.
+model_file: ./weights/DDTracking.pt
+dwi_path: /path/to/MNI_dwi.nii.gz
+wm_mask_dir: null
+brain_mask_dir: /path/to/MNI_brain_mask.nii.gz
+out_dir: ./tracking_output
+out_name: tracks.trk
+num_seeds: 1
+step_size: 0.5
+max_angle: 45
+max_length: 200
+min_length: 40
+track_batch_size: 1024
+num_layers: 2
+num_cells: 512
+cell_type: GRU
+dropout_prob: 0.5
+loss_type: l1
+sh_order: 6
+use_previous_dire: 0
+input_type: sh
+look_ahead: true
+device: cpu

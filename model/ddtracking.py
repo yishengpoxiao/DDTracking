@@ -7,10 +7,7 @@ import torch.nn.utils.rnn as rnn_utils
 from .conditional_unet1d import ConditionalUnet1D
 from .gaussion_diffusion import D2MP_OB, VarianceSchedule
 
-import sys
-sys.path.append('../')
-
-from utils.utils import *
+from utils.utils import interpolate_volume_in_neighborhood_torch
 
 
 class ResBlock(nn.Module):
@@ -96,7 +93,9 @@ class DDTracking(nn.Module):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
         
-        self.offset = torch.as_tensor([[dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)])
+        self.register_buffer('offset', torch.tensor([
+            [dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+        ]), persistent=False)
         
     def block(self, in_features, out_features):
         if in_features == out_features:

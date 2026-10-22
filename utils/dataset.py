@@ -2,10 +2,14 @@ from concurrent.futures import ProcessPoolExecutor
 
 import h5py
 import copy
+import multiprocessing
 import os
+from pathlib import Path
 import nibabel as nib
 import nibabel.streamlines
+import numpy as np
 import torch.utils.data as data
+from dipy.io import read_bvals_bvecs
 from dipy.core.gradients import gradient_table
 import dipy.reconst.dti as dti
 from dipy.tracking.streamline import set_number_of_points, length
@@ -19,11 +23,7 @@ def load_subject(input_path, input_type='sh', sh_order=6, vox_step=0.5):
     print("load subject's brain mask from {}".format(input_path))
     brain_mask_path = locate_files(input_path, 'brain-mask')
     print("load subject's wm mask from {}".format(input_path))
-    try:
-        wm_mask_path = locate_files(input_path, 'wm-mask')
-    except Exception as e:
-        print(f"Error loading WM mask: {e}")
-        wm_mask_path = None
+    wm_mask_path = locate_files(input_path, 'wm-mask')
     print("load subject's tract from {}".format(input_path))
     tract_path = locate_files(input_path, 'tract')
 
@@ -32,27 +32,33 @@ def load_subject(input_path, input_type='sh', sh_order=6, vox_step=0.5):
 
 
 def load_dataset(path, mode, sh_order=6, input_type='sh', flip_streamline=False, vox_step=0.5):
-    if os.path.isdir(path):
-        for fname in os.listdir(path):
-            if os.path.isfile(os.path.join(path, fname)) and fname.endswith('.h5'):
-                return TractographyDataset(h5_file=os.path.join(path, fname), flip_streamline=flip_streamline)
+    path = Path(path)
+    if not path.is_dir():
+        return TractographyDataset(h5_file=str(path), flip_streamline=flip_streamline)
 
-        max_workers = min(32, os.cpu_count() + 4)
-        # max_workers = 10
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(load_subject, os.path.join(path, sub_dir), input_type, sh_order, vox_step) for sub_dir in os.listdir(path)]
+    cached = path / f'{mode}_{input_type}_sh{sh_order}_step{vox_step:g}_dataset.h5'
+    if cached.is_file():
+        return TractographyDataset(h5_file=str(cached), flip_streamline=flip_streamline)
 
-            subjects = []
-            for future in futures:
-                subject = future.result()
-                if subject is not None:
-                    subjects.append(subject)
+    subject_dirs = sorted(child for child in path.iterdir() if child.is_dir())
+    if not subject_dirs:
+        raise FileNotFoundError(
+            f"No subject directories or matching cache {cached.name} found in {path}; "
+            "pass an HDF5 file path explicitly to load an existing dataset.")
 
-        dataset = TractographyDataset(subjects=subjects, flip_streamline=flip_streamline)
-        dataset.save_to_h5(os.path.join(path, f'{mode}_dataset.h5'))
+    workers = min(32, (os.cpu_count() or 1) + 4, len(subject_dirs))
+    if workers == 1:
+        subjects = [load_subject(str(subject), input_type, sh_order, vox_step)
+                    for subject in subject_dirs]
     else:
-        dataset = TractographyDataset(h5_file=path, flip_streamline=flip_streamline)
+        with ProcessPoolExecutor(max_workers=workers,
+                                 mp_context=multiprocessing.get_context('spawn')) as executor:
+            futures = [executor.submit(load_subject, str(subject), input_type, sh_order, vox_step)
+                       for subject in subject_dirs]
+            subjects = [future.result() for future in futures]
 
+    dataset = TractographyDataset(subjects=subjects, flip_streamline=flip_streamline)
+    dataset.save_to_h5(str(cached))
     return dataset
 
 
@@ -94,6 +100,10 @@ class TractographyData(object):
         if self.input_type not in ['resample', 'sh', 'fodf', 'rish']:
             raise ValueError('Input type must be either "resample", "sh", "fodf", or "rish".')
 
+        if self.dwi_path is None:
+            raise ValueError("A DWI path is required.")
+        if self.brain_mask_path is None:
+            raise ValueError("A brain mask path is required.")
         if self.mode == 'train' and self.tractogram_path is None:
             raise ValueError("Tractogram path must be provided for training mode.")
 
@@ -101,15 +111,16 @@ class TractographyData(object):
         self.dwi = self.gradients = self.brain_mask = self.wm_mask = self.tractogram = self.ID = None
         self.volume = None
 
-        self.ID = os.path.dirname(self.dwi_path).split('/')[-2]
+        dwi_parent = Path(self.dwi_path).parent
+        self.ID = dwi_parent.parent.name or dwi_parent.name
 
         # Load data
         if self.dwi_path is not None:
             self.load_dwi()
         if self.brain_mask_path is not None:
-            self.brain_mask = self.load_mask(self.brain_mask_path).astype(np.bool_)
+            self.brain_mask = self.load_mask(self.brain_mask_path, self.dwi).astype(np.bool_)
         if self.wm_mask_path is not None:
-            self.wm_mask = self.load_mask(self.wm_mask_path).astype(np.bool_)
+            self.wm_mask = self.load_mask(self.wm_mask_path, self.dwi).astype(np.bool_)
         if self.tractogram_path is not None:
             step_size = self.dwi.header.get_zooms()[0] * self.vox_step if self.mode == 'train' else None
             self.load_tractogram(step_size)
@@ -140,19 +151,52 @@ class TractographyData(object):
             self.GA = GA
 
     def load_dwi(self):
-        dwi_dir = os.path.dirname(self.dwi_path)
+        dwi_path = Path(self.dwi_path)
+        self.dwi = nib.load(str(dwi_path))
+        if len(self.dwi.shape) != 4:
+            raise ValueError(f"DWI must be four-dimensional: {dwi_path}")
 
-        dwi_file = glob.glob(os.path.join(dwi_dir, '*dwi*.nii*'))[0]
-        self.dwi = nib.load(dwi_file)
+        name = dwi_path.name
+        stem = name[:-7] if name.endswith('.nii.gz') else dwi_path.stem
 
-        bval_file = glob.glob(os.path.join(dwi_dir, '*bval*'))[0]
-        bvec_file = glob.glob(os.path.join(dwi_dir, '*bvec*'))[0]
-        self.gradients = gradient_table(bval_file, bvec_file)
+        def sidecar(kind):
+            candidates = [dwi_path.parent / f'{stem}.{kind}',
+                          dwi_path.parent / f'{stem}.{kind}s']
+            matches = [candidate for candidate in candidates if candidate.is_file()]
+            if len(matches) == 1:
+                return matches[0]
+            if not matches:
+                raise FileNotFoundError(f"Could not find the {kind} file paired with {dwi_path}.")
+            raise ValueError(f"Multiple {kind} files match {dwi_path}: {matches}")
+
+        bval_path = sidecar('bval')
+        bvec_path = sidecar('bvec')
+        bvals, bvecs = read_bvals_bvecs(str(bval_path), str(bvec_path))
+        bvals = np.asarray(bvals).reshape(-1)
+        bvecs = np.asarray(bvecs)
+        if len(bvals) != self.dwi.shape[3]:
+            raise ValueError("b-value count must match the DWI fourth dimension.")
+        if bvecs.shape != (len(bvals), 3):
+            raise ValueError("b-vector count must match the DWI fourth dimension.")
+        if not np.isfinite(bvals).all() or (bvals < 0).any() or not np.isfinite(bvecs).all():
+            raise ValueError("Gradient sidecars must contain finite, nonnegative b-values and finite b-vectors.")
+        b0_mask = bvals <= 50
+        if not b0_mask.any():
+            raise ValueError("At least one b=0 volume is required for DWI normalization.")
+        if (np.linalg.norm(bvecs[~b0_mask], axis=1) <= 0).any():
+            raise ValueError("Every diffusion-weighted volume must have a nonzero b-vector.")
+        self.gradients = gradient_table(bvals, bvecs, b0_threshold=50)
 
     @staticmethod
-    def load_mask(mask_path):
-        dwi_data = nib.load(mask_path)
-        return (dwi_data.get_fdata() > 0.1) * 1.
+    def load_mask(mask_path, reference):
+        image = nib.load(str(mask_path))
+        if len(image.shape) != 3 or image.shape != reference.shape[:3] or not np.allclose(
+                image.affine, reference.affine, rtol=0, atol=1e-4):
+            raise ValueError(f"Mask must have the same three-dimensional grid as the DWI: {mask_path}")
+        data = image.get_fdata(dtype=np.float32)
+        if not np.isfinite(data).all():
+            raise ValueError(f"Mask contains non-finite values: {mask_path}")
+        return data > 0.1
 
     def load_tractogram(self, step_size=None):
         tract_file = nib.streamlines.load(self.tractogram_path)
@@ -160,13 +204,22 @@ class TractographyData(object):
 
         # Resample streamline to have a fixed step size, if needed.
         if step_size is not None:
+            if step_size <= 0:
+                raise ValueError("Streamline resampling step size must be positive.")
             print("Resampling streamlines to have a step size of {}mm".format(step_size))
-            streamlines = tractogram.streamlines
-            streamlines._lengths = streamlines._lengths.astype(int)
-            streamlines._offsets = streamlines._offsets.astype(int)
+            streamlines = []
+            for line in tractogram.streamlines:
+                if not np.isfinite(line).all():
+                    raise ValueError("Tractogram contains non-finite streamline coordinates.")
+                if len(line):
+                    keep = np.r_[True, np.linalg.norm(np.diff(line, axis=0), axis=1) > 0]
+                    line = line[keep]
+                if len(line) >= 2:
+                    streamlines.append(line)
             lengths = length(streamlines)
-            nb_points = np.ceil(lengths / step_size).astype(int)
-            new_streamlines = (set_number_of_points(s, n) for s, n in zip(streamlines, nb_points))
+            nb_points = np.ceil(lengths / step_size).astype(int) + 1
+            new_streamlines = (set_number_of_points(line, int(count))
+                               for line, count in zip(streamlines, nb_points))
             tractogram = nib.streamlines.Tractogram(new_streamlines, affine_to_rasmm=np.eye(4))
 
         # Compute matrix that brings streamlines back to diffusion voxel space.
@@ -176,10 +229,14 @@ class TractographyData(object):
         self.tractogram = tractogram
 
     def preprocess_dwi(self):
-        self.masked_dwi = mask_dwi(self.dwi.get_fdata().astype(np.float32), self.brain_mask)
+        dwi_data = self.dwi.get_fdata().astype(np.float32)
+        if not np.isfinite(dwi_data).all():
+            raise ValueError(f"DWI contains non-finite values: {self.dwi_path}")
+        self.masked_dwi = mask_dwi(dwi_data, self.brain_mask)
         if self.input_type == 'fodf':
             print("compute fodf using CSD")
-            csd_fit = compute_fodf_ssst(self.masked_dwi, self.gradients, self.brain_mask)
+            csd_fit = compute_fodf_ssst(self.masked_dwi, self.gradients, self.brain_mask,
+                                        sh_order=self.sh_order)
             volume = csd_fit.shm_coeff.astype(np.float32)
             self.volume = volume
         elif self.input_type == 'resample':
@@ -193,7 +250,8 @@ class TractographyData(object):
 def calculate_directions(streamline):
     directions = np.diff(streamline, axis=0)
     norms = np.linalg.norm(directions, axis=-1)[:, None]
-    return directions / norms
+    return np.divide(directions, norms, out=np.zeros_like(directions, dtype=np.float32),
+                     where=norms > 0)
 
 
 class TractographyDataset(data.Dataset):
@@ -216,6 +274,8 @@ class TractographyDataset(data.Dataset):
             self.streamline_id_to_volume_id = []
 
             for idx, subject in enumerate(subjects):
+                if subject.volume.shape[-1] != self.grad_directions:
+                    raise ValueError("All subjects must have the same number of input features.")
                 sub_streamlines = subject.tractogram.streamlines
                 
                 self.streamlines.extend(sub_streamlines)
@@ -228,15 +288,23 @@ class TractographyDataset(data.Dataset):
     def load_from_h5(self, file_path):
         with h5py.File(file_path, 'r') as h5f:
             self.grad_directions = h5f['grad_directions'][:][0]
-            self.volumes = [h5f['volumes'][key][()] for key in h5f['volumes'].keys()]
-            self.streamline_id_to_volume_id = h5f['streamline_id_to_volume_id'][:]
+            volume_keys = sorted(h5f['volumes'].keys(), key=int)
+            if volume_keys != [str(index) for index in range(len(volume_keys))]:
+                raise ValueError("HDF5 volume keys must be contiguous numeric IDs starting at zero.")
+            self.volumes = [h5f['volumes'][key][()] for key in volume_keys]
+            self.streamline_id_to_volume_id = h5f['streamline_id_to_volume_id'][:].astype(np.int64)
 
-        self.streamlines = nibabel.streamlines.ArraySequence().load(file_path.replace('h5', 'npz'))
+        self.streamlines = nibabel.streamlines.ArraySequence().load(str(Path(file_path).with_suffix('.npz')))
+        if len(self.streamline_id_to_volume_id) != len(self.streamlines):
+            raise ValueError("HDF5 streamline-to-volume mapping does not match the saved streamlines.")
+        if (self.streamline_id_to_volume_id < 0).any() or (self.streamline_id_to_volume_id >= len(self.volumes)).any():
+            raise ValueError("HDF5 streamline-to-volume mapping references a missing volume.")
 
     def save_to_h5(self, file_path):
         """
         Saves the dataset to an HDF5 file.
         """
+        file_path = Path(file_path)
         with h5py.File(file_path, 'w') as h5f:
             h5f.create_dataset('grad_directions', data=np.array([self.grad_directions]), dtype=np.int64)
             volumes_group = h5f.create_group('volumes')
@@ -244,98 +312,46 @@ class TractographyDataset(data.Dataset):
                 volumes_group.create_dataset(str(idx), data=volume, compression="gzip")
             h5f.create_dataset('streamline_id_to_volume_id', data=self.streamline_id_to_volume_id)
 
-        self.streamlines.save(file_path.replace('h5', 'npz'))
+        self.streamlines.save(str(file_path.with_suffix('.npz')))
         
     def split_into_train_valid(self, split_frac=0.9):
-        
-        np.random.seed(42)
+        if not 0 < split_frac < 1:
+            raise ValueError("split_frac must be between zero and one.")
+        if len(self.streamlines) < 2:
+            raise ValueError("At least two streamlines are required for a train/validation split.")
+
+        rng = np.random.RandomState(42)
+        volume_ids = np.asarray(self.streamline_id_to_volume_id, dtype=np.int64)
         if len(self.volumes) > 1:
-            volume_indices = np.random.permutation(len(self.volumes))
-
-            split = np.ceil((1 - split_frac) * len(self.volumes)).astype(int)
-
-            valid_volume_indices = volume_indices[:split]
-            train_volume_indices = volume_indices[split:]
-
-            volume_id_map = {old_id: new_id for new_id, old_id in enumerate(train_volume_indices)}
-            volume_id_map.update({old_id: new_id for new_id, old_id in enumerate(valid_volume_indices)})
-
-            train_volumes = [self.volumes[i] for i in train_volume_indices]
-            valid_volumes = [self.volumes[i] for i in valid_volume_indices]
-
-            del self.volumes
-
-            train_streamline_indice = np.where(np.isin(self.streamline_id_to_volume_id, train_volume_indices))[0]
-            valid_streamline_indice = np.where(np.isin(self.streamline_id_to_volume_id, valid_volume_indices))[0]
-
-            train_streamlines = self.streamlines[train_streamline_indice]
-            valid_streamlines = self.streamlines[valid_streamline_indice]
-
-            del self.streamlines
-
-            train_streamline_id_to_volume_id = np.array([volume_id_map[v_id] for v_id in np.array(self.streamline_id_to_volume_id)[train_streamline_indice]])     
-            valid_streamline_id_to_volume_id = np.array([volume_id_map[v_id] for v_id in np.array(self.streamline_id_to_volume_id)[valid_streamline_indice]])
-
-            del self.streamline_id_to_volume_id
-
-            train_dataset = copy.deepcopy(self)
-            valid_dataset = copy.deepcopy(self)
-
-            train_dataset.streamlines = nibabel.streamlines.ArraySequence()
-            train_dataset.streamlines.extend(train_streamlines)
-            del train_streamlines
-            
-            train_dataset.streamline_id_to_volume_id = train_streamline_id_to_volume_id
-            del train_streamline_id_to_volume_id
-            train_dataset.volumes = train_volumes
-            del train_volumes
-
-            valid_dataset.streamlines = nibabel.streamlines.ArraySequence()
-            valid_dataset.streamlines.extend(valid_streamlines)
-            del valid_streamlines
-
-            valid_dataset.streamline_id_to_volume_id = valid_streamline_id_to_volume_id
-            del valid_streamline_id_to_volume_id
-            valid_dataset.volumes = valid_volumes
-            del valid_volumes
+            order = rng.permutation(len(self.volumes))
+            valid_count = int(np.ceil((1 - split_frac) * len(self.volumes)))
+            if not 0 < valid_count < len(self.volumes):
+                raise ValueError("split_frac must leave at least one subject in each split.")
+            groups = (order[valid_count:], order[:valid_count])
         else:
-            indices = np.random.permutation(len(self.streamlines))
-            
-            split = int(split_frac * len(self.streamlines))
-            
-            train_indices = indices[:split]
-            valid_indices = indices[split:]
+            order = rng.permutation(len(self.streamlines))
+            train_count = int(split_frac * len(self.streamlines))
+            if not 0 < train_count < len(self.streamlines):
+                raise ValueError("split_frac must leave at least one streamline in each split.")
+            groups = (order[:train_count], order[train_count:])
 
-            train_streamlines = self.streamlines[train_indices]
-            valid_streamlines = self.streamlines[valid_indices]
-            
-            del self.streamlines
-            
-            train_streamline_id_to_volume_id = np.array(self.streamline_id_to_volume_id)[train_indices]
-            valid_streamline_id_to_volume_id = np.array(self.streamline_id_to_volume_id)[valid_indices]
-
-            del self.streamline_id_to_volume_id
-
-            train_dataset = copy.deepcopy(self)
-            valid_dataset = copy.deepcopy(self)
-
-            del self.volumes
-            
-            train_dataset.streamlines = nibabel.streamlines.ArraySequence()
-            train_dataset.streamlines.extend(train_streamlines)
-            del train_streamlines
-
-            train_dataset.streamline_id_to_volume_id = train_streamline_id_to_volume_id
-            del train_streamline_id_to_volume_id
-
-            valid_dataset.streamlines = nibabel.streamlines.ArraySequence()
-            valid_dataset.streamlines.extend(valid_streamlines)
-            del valid_streamlines
-
-            valid_dataset.streamline_id_to_volume_id = valid_streamline_id_to_volume_id
-            del valid_streamline_id_to_volume_id
-
-        return train_dataset, valid_dataset
+        datasets = []
+        for group in groups:
+            dataset = copy.copy(self)
+            if len(self.volumes) > 1:
+                dataset.volumes = [self.volumes[index] for index in group]
+                volume_id_map = {int(old_id): new_id for new_id, old_id in enumerate(group)}
+                indices = np.flatnonzero(np.isin(volume_ids, group))
+                dataset.streamline_id_to_volume_id = np.array(
+                    [volume_id_map[int(volume_ids[index])] for index in indices], dtype=np.int64)
+            else:
+                dataset.volumes = list(self.volumes)
+                indices = group
+                dataset.streamline_id_to_volume_id = volume_ids[indices].copy()
+            dataset.streamlines = nibabel.streamlines.ArraySequence()
+            dataset.streamlines.extend(self.streamlines[indices])
+            datasets.append(dataset)
+        return datasets[0], datasets[1]
 
     def fun_flip_streamline(self):
         flip_streamline = [s[::-1] for s in self.streamlines]
